@@ -1,0 +1,177 @@
+// server.ts
+// Servidor HTTP para el ESP32: recibe audio grabado, transcribe, genera
+// respuesta con Ivi, y devuelve audio MP3 listo para decodificar en el ESP32.
+//
+// V1 (ahora): POST /api/touch — el ESP32 manda audio y recibe audio de vuelta.
+// V2 (futuro): WebSocket para streaming bidireccional en tiempo real.
+
+import "dotenv/config";
+import express from "express";
+import { transcribirAudio } from "./stt";
+import { generarRespuesta, extraerHechos, ConversationMessage } from "./llm";
+import { generarAudioMP3 } from "./tts";
+import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
+
+const app = express();
+const PORT = parseInt(process.env.PORT || "3000", 10);
+
+// Body parser para audio crudo (ESP32 envía POST con Content-Type: audio/wav)
+app.use("/api/touch", express.raw({ type: "audio/wav", limit: "10mb" }));
+
+// --- Memoria persistente ---
+let contextoHechos = "";
+
+async function initMemory() {
+  try {
+    await inicializarDB();
+    const hechos = await obtenerHechos();
+    if (hechos.length > 0) {
+      contextoHechos =
+        "\n\nESTO ES LO QUE SABES DE LA PERSONA (úsalo con naturalidad, solo cuando venga al caso, nunca lo repitas como si fuera una lista):\n" +
+        hechos.map((h) => `- ${h}`).join("\n");
+    }
+  } catch (err: any) {
+    console.error("No se pudo conectar a Turso (memoria deshabilitada):", err.message);
+  }
+}
+
+// --- Health check ---
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", servicio: "ivi-server", version: "1.0.0" });
+});
+
+/**
+ * energiaAudio: mide la energía real (RMS) de un WAV PCM 16-bit recibido.
+ * Sirve para DISTINGUIR tres casos que Groq no puede distinguir por sí solo:
+ *   - ECO/SILENCIO  → RMS bajo  (Groq alucina "Gracias.", "¡Suscríbase!", …)
+ *   - VOZ CERCANA   → RMS alto con picos irregulares (la tuya)
+ *   - RUIDO/AMBIENTE→ RMS medio plano (TV, vibración de placa)
+ * Si el RMS es demasiado bajo, el server NO tiene por qué gastar una llamada
+ * a Groq: responde "no te escuché" y le pide que acerque el micrófono.
+ */
+function energiaAudio(buf: Buffer): number | null {
+  try {
+    const hdr = 44; // 16-bit PCM WAV (el ESP manda cabecera completa)
+    const data = buf;
+    if (data.length <= hdr + 2) return null;
+    // ignoramos la cabecera y mostreamos un trozo central (la voz en medio)
+    let sum = 0;
+    let n = 0;
+    const inicio = hdr;
+    const fin = data.length;
+    // muestreamos 1 de cada 4 samples para velocidad; consideramos mono
+    for (let i = inicio; i < fin - 1; i += 2) {
+      const s16 = data.readInt16LE(i);
+      sum += s16 * s16;
+      n++;
+    }
+    if (n === 0) return null;
+    return Math.sqrt(sum / n);
+  } catch (_e) {
+    return null;
+  }
+}
+
+// --- Endpoint principal: audio → audio ---
+// POST /api/touch
+//   Body: audio WAV/PCM crudo (Content-Type: audio/wav)
+//   Responde:
+//     Headers: X-Ivi-Texto, X-Ivi-Emocion
+//     Body: MP3 (24kHz, mono) — el ESP32 decodifica con ESP8266Audio antes de I2S → MAX98357
+app.post("/api/touch", async (req, res) => {
+  const inicio = Date.now();
+  const audioBuffer = req.body as Buffer;
+
+  if (!audioBuffer || audioBuffer.length === 0) {
+    res.status(400).json({ error: "No se recibió audio" });
+    return;
+  }
+
+  console.log(`[touch] Audio recibido: ${audioBuffer.length} bytes`);
+  // DIAGNOSTICO: copia permanente del ULTIMO PTT tal cual lo oye Groq, para
+  // que podamos analizar su perfil de energia (eco al inicio vs voz fresca).
+  try { require("fs").writeFileSync("/tmp/last_ptt.wav", audioBuffer); } catch (_e) {}
+
+  // VALIDACIÓN DE VOZ: si el clip es silencio puro / ruido sin voz, Groq
+  // alucina frases ("Gracias.", "¡Suscríbase!", "vibración de una placa")
+  // sobre el ambiente. Mido la energía real del PCM (16-bit WAV) y exijo
+  // un mínimo de "voz activa" ANTES de gastar una llamada a Groq.
+  try {
+    const rms = energiaAudio(audioBuffer);
+    if (rms !== null && rms < 300) {
+      console.log(`[touch] Audio sin VOZ real (RMS=${rms}) → no se llama a Groq`);
+      const mp3 = await generarAudioMP3("No te escuché, acerca el micrófono a tu boca y repite.");
+      res.set({
+        "Content-Type": "audio/mpeg",
+        "X-Ivi-Texto": "No te escuché, acerca el micrófono a tu boca y repite.",
+        "X-Ivi-Emocion": "neutral",
+      });
+      res.send(mp3);
+      return;
+    }
+    console.log(`[touch] Audio con VOZ (RMS=${rms}) → Groq`);
+  } catch (_e) {}
+
+  // 1. Transcribir audio → texto
+  const textoUsuario = await transcribirAudio(audioBuffer);
+  if (!textoUsuario) {
+    console.log("[touch] No se pudo transcribir el audio");
+    res.status(422).json({ error: "No se pudo transcribir el audio" });
+    return;
+  }
+  console.log(`[touch] Transcripción: "${textoUsuario}" (${Date.now() - inicio}ms)`);
+
+  // 2. Mantener historial de conversación (se resetea entre sesiones del ESP32)
+  const historial: ConversationMessage[] = [
+    { role: "user", content: textoUsuario },
+  ];
+
+  // 3. Generar respuesta de Ivi
+  const respuesta = await generarRespuesta(historial);
+  console.log(`[touch] Ivi [${respuesta.emocion}]: ${respuesta.texto} (${Date.now() - inicio}ms)`);
+
+  // 4. Generar audio MP3
+  try {
+    const mp3Buffer = await generarAudioMP3(respuesta.texto);
+
+    // Responder con audio como body y texto/emoción en headers
+    res.set({
+      "Content-Type": "audio/mpeg",
+      "X-Ivi-Texto": respuesta.texto,
+      "X-Ivi-Emocion": respuesta.emocion,
+      "X-Ivi-Audio-Length": String(mp3Buffer.length),
+    });
+    res.send(mp3Buffer);
+    console.log(`[touch] Respuesta enviada: ${mp3Buffer.length} bytes MP3 (${Date.now() - inicio}ms total)`);
+  } catch (err: any) {
+    console.error("[touch] Error generando audio:", err.message);
+    res.status(500).json({ error: "Error generando audio" });
+    return;
+  }
+
+  // 5. Extraer hechos en background (fire-and-forget)
+  historial.push({ role: "assistant", content: respuesta.texto });
+  extraerHechos(historial)
+    .then((nuevos) => {
+      if (nuevos.length > 0) {
+        console.log(`  [memoria] +${nuevos.length} hecho(s) guardado(s)`);
+      }
+      return Promise.all(nuevos.map(guardarHecho));
+    })
+    .catch((err) => console.error("Error guardando hechos:", err.message));
+});
+
+// --- Iniciar servidor ---
+async function main() {
+  await initMemory();
+  app.listen(PORT, () => {
+    console.log(`Ivi server escuchando en http://localhost:${PORT}`);
+    console.log(`  POST /api/touch — recibir audio del ESP32`);
+    console.log(`  GET  /health    — health check`);
+  });
+}
+
+main().catch((err) => {
+  console.error("Error iniciando servidor:", err);
+  process.exit(1);
+});

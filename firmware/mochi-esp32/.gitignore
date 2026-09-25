@@ -1,0 +1,5 @@
+# Ignorar credenciales / configuracion local
+src/config.h
+.pio/
+.vscode/
+*.swp

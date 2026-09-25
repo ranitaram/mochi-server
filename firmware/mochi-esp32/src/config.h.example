@@ -1,0 +1,62 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// ------------------------------------------------------------------
+//  Ivi - configuracion del firmware
+//  COPIAR este archivo a "config.h" y llenar los datos reales.
+//  config.h esta en .gitignore (NO subirlo al repositorio).
+// ------------------------------------------------------------------
+
+// ------------------------- Wi-Fi -------------------------
+// Hasta 3 redes conocidas; WiFiMulti conecta a la mejor disponible.
+// Las redes 2 y 3 son OPCIONALES: si no se usan, dejar el SSID como ""
+// (vacio). Basta rellenar solo 1 si no se necesitan las demas.
+#define WIFI_SSID_1        "TU_SSID_1"             // CASA (principal)
+#define WIFI_PASSWORD_1    "TU_PASSWORD_1"
+#define WIFI_SSID_2        ""                      // FAMILIAR (opcional)
+#define WIFI_PASSWORD_2    ""
+#define WIFI_SSID_3        ""                      // HOTSPOT (opcional)
+#define WIFI_PASSWORD_3    ""
+
+// ---------------------- Servidor -------------------------
+// IP o hostname del servidor (mochi-server). Ej: "192.168.1.50" o "midominio.ddns.net"
+#define SERVER_HOST      "192.168.1.50"
+#define SERVER_PORT      3001
+#define SERVER_PATH      "/api/touch"
+#define SERVER_USE_HTTPS 0   // 0 = http, 1 = https
+
+// Modo auto-test de arranque (validacion sin piezas): corre el test al
+// encender y loguea por Serial. Poner a 0 cuando lleguen las piezas.
+#define SELF_TEST        1
+
+// Por duracion maxima de grabacion
+#define REC_MAX_SECONDS  8       // segundos (push-to-talk)
+#define REC_SAMPLE_RATE  16000   // Hz (16kHz, mono, 16 bits)
+
+// ------------------------ Pines --------------------------
+// OLED SSD1306 (I2C)
+#define PIN_OLED_SDA     8
+#define PIN_OLED_SCL     9
+
+// Joystick analogico (push-to-talk) — ADC1, NUNCA ADC2 (GPIO11-20) con WiFi
+#define JOYSTICK_VRX_PIN       1
+#define JOYSTICK_VRY_PIN       2
+#define JOYSTICK_DEADZONE       300      // mitad de la zona muerta (por eje)
+#define JOYSTICK_CENTER_MS      120      // ms que debe mantenerse centrado al soltar
+#define JOYSTICK_CAL_SAMPLES    100      // muestras para auto-calibrar el centro
+
+// INMP441 microfono (I2S0 - set de pines propio)
+#define MIC_BCK          38
+#define MIC_WS           39
+#define MIC_DIN          12
+
+// MAX98357 bocina (I2S1 - set de pines propio e independiente)
+#define SPK_BCK          15
+#define SPK_WS           16
+#define SPK_DOUT         17
+
+// ----------------------- PSRAM ---------------------------
+// Habilitar uso de PSRAM para buffers de audio (8MB en la N16R8)
+#define USE_PSRAM        1
+
+#endif // CONFIG_H
