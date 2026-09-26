@@ -4,8 +4,7 @@
 // vía src/crypto.ts; este campo nunca contiene texto plano.
 
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["driverAdapters"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
