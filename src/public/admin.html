@@ -68,9 +68,10 @@
 <script>
 let tokenSel = null;
 let editId = null;
-// Fallback de sesion cuando el navegador bloquea cookies: el login devuelve el
-// token en el body y lo mandamos como Authorization: Bearer en cada api().
-const tokenSesion = sessionStorage.getItem("ivi_token");
+// El token de sesión puede venir por URL (?t=...), por sessionStorage o por
+// cookie. Cualquier vía sirve: el server acepta cookie O header Bearer.
+const tokenUrl = new URLSearchParams(location.search).get("t");
+const tokenSesion = tokenUrl || sessionStorage.getItem("ivi_token");
 
 const $ = (id) => document.getElementById(id);
 
@@ -86,7 +87,17 @@ async function api(url, opts = {}) {
   if (opts.body) headers["Content-Type"] = "application/json";
   if (tokenSesion) headers["Authorization"] = "Bearer " + tokenSesion;
   const r = await fetch(url, { credentials: "same-origin", headers, ...opts });
-  if (r.status === 401) { location.href = "/login"; throw new Error("sin sesión"); }
+  if (r.status === 401) {
+    // Diagnóstico visible: qué llegó realmente al server en este request.
+    try {
+      const h = {};
+      if (tokenSesion) h["Authorization"] = "Bearer " + tokenSesion;
+      const d = await fetch("/admin/diag", { credentials: "same-origin", headers: h }).then((x) => x.json());
+      mostrar({ err: `Sesión rechazada. El navegador envió: Bearer=${d.bearer ? "sí" : "NO"} Cookie=${d.cookie ? "sí" : "NO"} (válido: ${d.valid})` });
+    } catch (_e) { mostrar({ err: "Sesión rechazada (401)" }); }
+    setTimeout(() => (location.href = "/login"), 5000);
+    throw new Error("sin sesión");
+  }
   return { status: r.status, body: await r.json().catch(() => ({})) };
 }
 

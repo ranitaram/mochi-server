@@ -45,6 +45,18 @@ export function isAdmin(req: Request): boolean {
   return verificarToken(tokenDe(req));
 }
 
+// Diagnóstico visible en el panel: ¿llegó el header, llegó la cookie, valida?
+// Público a propósito (no filtra secretos, solo sí/no) para depurar el
+// rebote de sesión desde el navegador sin entrar a los logs del server.
+export function diagnosticoAuth(req: Request) {
+  const auth = req.headers.authorization ?? "";
+  return {
+    bearer: /^Bearer\s+/i.test(auth),
+    cookie: leerCookie(req) !== null,
+    valid: isAdmin(req),
+  };
+}
+
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (isAdmin(req)) return next();
   // Log de diagnóstico: distinguir "sin header", "sin cookie" e "token inválido"

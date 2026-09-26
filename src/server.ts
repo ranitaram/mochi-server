@@ -13,7 +13,7 @@ import { generarRespuesta, extraerHechos } from "./llm";
 import { generarAudioMP3 } from "./tts";
 import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
 import { deviceRouter } from "./deviceRoutes";
-import { loginAdmin, logoutAdmin } from "./auth";
+import { loginAdmin, logoutAdmin, diagnosticoAuth } from "./auth";
 import { obtenerSesion, agregarMensaje } from "./session";
 
 const app = express();
@@ -31,6 +31,12 @@ app.use(express.json());
 // Portal web (login + panel de redes WiFi)
 app.post("/admin/login", loginAdmin);
 app.post("/admin/logout", logoutAdmin);
+// Diagnóstico de sesión: responde lo que llegó en ESTE request (sin exigir
+// auth) para que el panel muestre por qué el navegador fue rechazado.
+app.get("/admin/diag", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json(diagnosticoAuth(_req));
+});
 // extensions: permite acceder /admin -> admin.html y /login -> login.html
 app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
 
