@@ -68,6 +68,9 @@
 <script>
 let tokenSel = null;
 let editId = null;
+// Fallback de sesion cuando el navegador bloquea cookies: el login devuelve el
+// token en el body y lo mandamos como Authorization: Bearer en cada api().
+const tokenSesion = sessionStorage.getItem("ivi_token");
 
 const $ = (id) => document.getElementById(id);
 
@@ -79,10 +82,10 @@ function mostrar(j) {
 }
 
 async function api(url, opts = {}) {
-  const r = await fetch(url, {
-    headers: opts.body ? { "Content-Type": "application/json" } : undefined,
-    ...opts,
-  });
+  const headers = {};
+  if (opts.body) headers["Content-Type"] = "application/json";
+  if (tokenSesion) headers["Authorization"] = "Bearer " + tokenSesion;
+  const r = await fetch(url, { credentials: "same-origin", headers, ...opts });
   if (r.status === 401) { location.href = "/login"; throw new Error("sin sesión"); }
   return { status: r.status, body: await r.json().catch(() => ({})) };
 }
@@ -198,6 +201,7 @@ $("formDevice").addEventListener("submit", async (e) => {
 });
 
 $("logout").addEventListener("click", async () => {
+  sessionStorage.removeItem("ivi_token");
   await fetch("/admin/logout", { method: "POST" });
   location.href = "/login";
 });

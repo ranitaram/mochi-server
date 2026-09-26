@@ -37,8 +37,12 @@ document.getElementById("login").addEventListener("submit", async (e) => {
       body: JSON.stringify({ user: fd.get("user"), password: fd.get("password") }),
     });
     const j = await r.json().catch(() => ({}));
-    if (r.ok) location.href = j.redirect || "/admin";
-    else msg.textContent = j.error || "Error de login";
+    if (r.ok) {
+      // Guardamos el token como fallback por si el navegador bloquea cookies;
+      // admin.html lo manda como Authorization: Bearer en cada request.
+      if (j.token) sessionStorage.setItem("ivi_token", j.token);
+      location.href = j.redirect || "/admin";
+    } else msg.textContent = j.error || "Error de login";
   } catch (err) {
     msg.textContent = "No se pudo conectar";
   }

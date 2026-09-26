@@ -24,13 +24,25 @@ export function leerCookie(req: Request): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
-export function isAdmin(req: Request): boolean {
-  const token = leerCookie(req);
+function verificarToken(token: string | null): boolean {
   if (!token) return false;
   const [payload, sig] = token.split(".");
   if (!payload || !sig) return false;
   if (sig !== firmar(payload)) return false;
   return payload.split(":")[0] === ADMIN_USER;
+}
+
+// Token de sesión del request: primero el header Authorization: Bearer
+// (fallback por si el navegador bloquea cookies), luego la cookie firmada.
+export function tokenDe(req: Request): string | null {
+  const auth = req.headers.authorization ?? "";
+  const m = /^Bearer\s+(.+)$/i.exec(auth);
+  if (m) return m[1].trim();
+  return leerCookie(req);
+}
+
+export function isAdmin(req: Request): boolean {
+  return verificarToken(tokenDe(req));
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
@@ -51,9 +63,12 @@ export function loginAdmin(req: Request, res: Response) {
     const token = `${payload}.${firmar(payload)}`;
     res.setHeader(
       "Set-Cookie",
-      `${COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; Max-Age=${MAX_AGE_SEC}; SameSite=Lax`
+      // Secure: el panel ya se sirve por HTTPS (Render); HttpOnly no deja leerla
+      // a JS. El token se devuelve tambien en el body para el fallback Bearer
+      // (navegadores que bloquean cookies/particionadas).
+      `${COOKIE}=${encodeURIComponent(token)}; HttpOnly; Secure; Path=/; Max-Age=${MAX_AGE_SEC}; SameSite=Lax`
     );
-    return res.json({ ok: true, redirect: "/admin" });
+    return res.json({ ok: true, redirect: "/admin", token });
   }
   res.status(401).json({ error: "Credenciales inválidas" });
 }
