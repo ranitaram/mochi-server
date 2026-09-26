@@ -63,7 +63,10 @@ int httpSendAudio(const uint8_t* wav, size_t wavLen, IviReply& reply) {
         strncpy(reply.texto, texto.c_str(), sizeof(reply.texto) - 1);
         strncpy(reply.emocion, emocion.c_str(), sizeof(reply.emocion) - 1);
 
-        // MP3 body directo
+        // MP3 body directo. IMPORTANTE: leer hasta el FINAL del buffer SIN
+        // depender de stream->available() (con HTTPS/red lentas available()
+        // puede dar 0 en un instante y cortar la descarga truncando el MP3,
+        // lo que se oye como una frase que se corta a ~1s).
         Stream* stream = http.getStreamPtr();
         size_t avail = http.getSize();
         if (avail > 0) {
@@ -74,11 +77,22 @@ int httpSendAudio(const uint8_t* wav, size_t wavLen, IviReply& reply) {
 #endif
             if (reply.audio) {
                 size_t got = 0;
-                while (stream->available() && got < avail) {
-                    got += stream->readBytes(reply.audio + got, (avail - got));
+                unsigned long dlStart = millis();
+                while (got < avail) {
+                    if (stream->available() > 0) {
+                        size_t r = stream->readBytes(reply.audio + got, avail - got);
+                        got += r;
+                    } else if ((unsigned long)(millis() - dlStart) > 30000UL) {
+                        Serial.printf("[http] Timeout descargando MP3 (%u/%u bytes)\n",
+                                      (unsigned)got, (unsigned)avail);
+                        break;
+                    } else {
+                        delay(5);
+                    }
                 }
                 reply.audio[got] = 0;
                 reply.audioLen = got;
+                Serial.printf("[http] MP3 descargado: %u/%u bytes\n", (unsigned)got, (unsigned)avail);
             }
         }
     }
