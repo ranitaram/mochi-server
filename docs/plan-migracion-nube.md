@@ -1,73 +1,43 @@
-# ⚠️ PLAN DE MIGRACIÓN A LA NUBE — NO EJECUTAR TODAVÍA
+# ✅ MIGRACIÓN A LA NUBE — REALIZADA
 
-> **!!! IMPORTANTE / NO EJECUTAR !!!**
-> Este plan es SOLO PARA REFERENCIA. **NO comiences ningún cambio de esto todavía.**
-> Se activa ÚNICAMENTE cuando el usuario **confirme explícitamente** que el hardware
-> está **completamente validado**, es decir: **micrófono reemplazado y funcionando,
-> TEST_AMP, TEST_JOY, TEST_ALL, SELF_TEST y flujo NORMAL** corriendo de punta a punta
-> contra el servidor local. Hasta entonces, no tocar `config.h` de red ni el servidor.
+> Estado: **EJECUTADA y VIVIENDO EN PRODUCCIÓN** (fases 2-4).
+> Antes de la migración, el ESP32 solo hablaba con el servidor si ambos estaban en la
+> misma red WiFi (la Mac en casa / hotspot del celular). Hoy el backend corre en la
+> nube con URL fija y accesible desde cualquier red.
 
----
+## DÓNDE CORRE
 
-## POR QUÉ MIGRAMOS
+- **Render** (free tier, servicio web `mochi-server-tnwq`): `https://mochi-server-tnwq.onrender.com`
+  - Auto-deploy desde la rama `main` de GitHub.
+  - El free tier **duerme tras ~15 min sin actividad**; el ESP32 lo despierta con
+    `GET /health` al bootear (ver `SERVER_WAKE_MAX_MS` / `SERVER_WAKE_POLL_MS` en
+    `config.h`).
+- **PostgreSQL** en **Neon** (DB Fase 2, Prisma 6). El cliente usa `@prisma/adapter-neon`
+  (driver HTTP): evita el TCP/IPv6-first que fallaba con el pooler 5432 desde Render.
+- **Memoria de hechos** sigue en **Turso** (SQLite), sin cambios de diseño.
 
-Ahora mismo el ESP32 solo puede hablar con el servidor si ambos están en la misma red
-WiFi. Eso significa que, para usar a Ivi fuera de casa (portátil, con el hotspot del
-celular), habría que llevar también la Mac y conectarla al mismo hotspot — lo que rompe
-el objetivo de portabilidad del proyecto.
-
-Migrar a la nube le da al servidor una **URL fija y accesible desde cualquier red**, sin
-depender de estar en la misma LAN.
-
-## DÓNDE SE VA A ALOJAR
-
-- **Railway** (opción preferida desde el inicio del proyecto): free tier generoso y
-  deploy simple para un proyecto Node/TypeScript pequeño como este.
-- Si al momento de migrar Railway ya no tiene un free tier viable, evaluar **Fly.io**
-  como alternativa equivalente. Railway es la primera opción.
-
-## QUÉ CAMBIA EN EL CÓDIGO
+## QUE CAMBIÓ EN EL CÓDIGO
 
 ### 1. Firmware del ESP32 (`config.h`)
-- `SERVER_HOST` deja de ser una IP local (`192.168.100.20`) y pasa a ser la URL fija
-  que asigne Railway (algo como `https://ivi-server.up.railway.app` o el dominio que
-  genere).
-- `SERVER_PORT` probablemente ya no aplica igual (Railway maneja HTTPS en el puerto
-  estándar 443): ajustar `SERVER_USE_HTTPS` a `1`.
-- Revisar si `http_client.cpp` necesita cambios para manejar TLS: el ESP32-S3 sí soporta
-  HTTPS, pero puede requerir el certificado raíz, o usar `WiFiClientSecure` con
-  `setInsecure()` como paso intermedio si los certificados dan problemas. Evaluarlo en
-  su momento.
+- `BACKEND_URL = "https://mochi-server-tnwq.onrender.com"` (HTTPS; `SERVER_HOST`/`SERVER_PORT`
+  de la etapa local ya no existen).
+- HTTPS con `WiFiClientSecure::setInsecure()` (canal cifrado, sin pin de certificado).
+- `DEVICE_TOKEN` identifica a esta Ivi y sincroniza sus redes WiFi desde el server.
+- `syncNetworks()` + `waitServerWake()`: al bootear despierta al server y, cuando
+  `/health` responde 200, baja las redes configuradas en el panel.
+- **WiFiMulti sí se mantiene**: el ESP32 elige casa/familiar/hotspot como fuente de
+  INTERNET; solo cambió a qué servidor le habla una vez que tiene internet.
 
 ### 2. Servidor (Node/TypeScript)
-- Revisar que las variables de entorno (`.env`: `GROQ_API_KEY`, `TURSO_DATABASE_URL`,
-  `TURSO_AUTH_TOKEN`, etc.) se configuren como variables de entorno del proyecto en el
-  dashboard de Railway.
-- **NUNCA** subir el archivo `.env` al repositorio.
+- Variables de entorno (`.env`) replicadas como env vars de Render: `GROQ_API_KEY`,
+  `DATABASE_URL`, `ADMIN_*`, `WIFI_ENC_KEY`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`,
+  etc. `.env` NO se sube al repo.
+- Nuevos endpoints de Fase 2: `/admin` + `/login` (panel de redes WiFi), API
+  `api/devices/...` (Prisma + PostgreSQL) y sync de redes por Bearer token.
 
-### 3. WiFiMulti
-- Ya no se usan las 3 redes pensando en "encontrar la Mac en la misma red".
-- **SÍ se mantiene** WiFiMulti para que el ESP32 elija entre casa/familiar/hotspot como
-  fuente de **INTERNET**; eso no cambia. Solo cambia a qué servidor le habla una vez que
-  ya tiene internet.
+## QUÉ NO CAMBIÓ
 
-### 4. IP local
-- Con el servidor en la nube, el problema de "la IP local cambió" desaparece por
-  completo: no hace falta reserva DHCP ni revisar IPs cada día, la URL de Railway es
-  permanente.
-
-## QUÉ NO CAMBIA
-
-- La arquitectura del pipeline (STT → LLM → TTS → respuesta).
-- La personalidad de Ivi.
-- La memoria con Turso.
-- El endpoint `/api/touch` con headers `X-Ivi-Texto` / `X-Ivi-Emocion` + body de audio.
-
-Nada de eso se toca: solo cambia la **ubicación** donde corre el servidor y **cómo lo
-alcanza el ESP32**.
-
-## CUÁNDO EJECUTARLO
-
-**NO ahora.** Solo cuando el usuario confirme explícitamente que el hardware está
-completamente validado y listo: mic + amp + joystick + flujo NORMAL funcionando de punta
-a punta en local.
+- Arquitectura del pipeline (STT → LLM → TTS → respuesta) y el endpoint `/api/touch`.
+- Personalidad de Ivi, fases de memoria (Turso) y las sesiones de conversación.
+- Con la URL de la nube, el problema de "la IP local cambió" desapareció: la URL es
+  permanente (no hace falta reserva DHCP ni revisar IPs).
