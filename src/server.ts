@@ -14,9 +14,13 @@ import { generarAudioMP3 } from "./tts";
 import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
 import { deviceRouter } from "./deviceRoutes";
 import { loginAdmin, logoutAdmin } from "./auth";
+import { debugRouter } from "./debug";
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
+
+// Diagnóstico de red (provisional): /debug/net?host=...&port=...
+app.use("/debug", debugRouter);
 
 // Body parser para audio crudo (ESP32 envía POST con Content-Type: audio/wav)
 app.use("/api/touch", express.raw({ type: "audio/wav", limit: "10mb" }));
