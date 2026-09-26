@@ -68,8 +68,8 @@ int httpFetchNetworks(WifiEntry* out, int maxOut) {
         String body = http.getString();
         JsonDocument doc;
         DeserializationError err = deserializeJson(doc, body);
-        if (!err && doc.is<JsonArray>()) {
-            JsonArray arr = doc.as<JsonArray>();
+        JsonArray arr = doc["redes"];
+        if (!err && !arr.isNull()) {
             size_t len = arr.size();
             for (size_t i = 0; i < len && count < maxOut; i++) {
                 const char* ssid = arr[i]["ssid"] | "";
