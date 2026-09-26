@@ -47,6 +47,15 @@ export function isAdmin(req: Request): boolean {
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (isAdmin(req)) return next();
+  // Log de diagnóstico: distinguir "sin header", "sin cookie" e "token inválido"
+  // para depurar el rebote de sesión en navegadores.
+  const auth = req.headers.authorization ?? "";
+  const cookie = leerCookie(req);
+  console.log(
+    "[auth] 401 " + req.path + " url=" + req.url +
+    " bearer=" + (auth.startsWith("Bearer ") ? "si(" + auth.slice(7, 20) + "...)" : "no") +
+    " cookie=" + (cookie ? "si(" + cookie.slice(0, 20) + "...)" : "no")
+  );
   res.status(401).json({ error: "No autorizado" });
 }
 
