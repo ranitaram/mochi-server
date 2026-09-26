@@ -15,7 +15,9 @@ services:
     runtime: node
     plan: free            # free tier: duerme tras ~15 min sin tráfico
     region: oregon
-    buildCommand: npm install && npx prisma generate && node scripts/migrate-deploy.cjs && npm run build
+    # migrate deploy: aplicado localmente; el build de Render (free) falla al
+    # conectar a Neon (P1001) — ver scripts/migrate-deploy.cjs para reintentos.
+    buildCommand: npm install && npx prisma generate && npm run build
     startCommand: npm start
     healthCheckPath: /health
     autoDeploy: true
