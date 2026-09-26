@@ -12,7 +12,7 @@ import { Router } from "express";
 import crypto from "crypto";
 import { getPrisma } from "./prisma";
 import { encryptPassword, decryptPassword } from "./crypto";
-import { requireAdmin } from "./auth";
+import { requireAdmin, isAdmin } from "./auth";
 
 // Prisma se instancia acá (primera vez que se toca una ruta de dispositivo),
 // ver src/prisma.ts — lazy para no romper /health si falta DATABASE_URL.
@@ -27,23 +27,20 @@ function tokenDelHeader(req: { headers: { authorization?: string } }): string | 
 }
 
 // GET /api/devices/:token/networks — lista de redes para el dispositivo
+// Autenticado por el token del dispositivo (ESP32) O por la sesión del admin
+// (cookie o Bearer). V1-bug: solo aceptaba el token de dispositivo, así que el
+// panel del admin rebotaba a /login aunque la sesión de admin fuera válida.
 deviceRouter.get("/api/devices/:token/networks", async (req, res) => {
   const token = String(req.params.token);
-  const bearer = tokenDelHeader(req);
-
-  if (!bearer) {
-    res.status(401).json({ error: "Falta token de dispositivo" });
-    return;
-  }
-
   const device = await prisma.device.findUnique({ where: { token } });
   if (!device) {
     res.status(404).json({ error: "Dispositivo no encontrado" });
     return;
   }
 
-  if (bearer !== token) {
-    res.status(401).json({ error: "Token inválido" });
+  const bearer = tokenDelHeader(req);
+  if (bearer !== token && !isAdmin(req)) {
+    res.status(401).json({ error: "No autorizado" });
     return;
   }
 
