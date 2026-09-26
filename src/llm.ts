@@ -127,13 +127,15 @@ export interface AgentReply {
  * Reintenta con backoff en errores transitorios; si agota, usa fallback rotativo.
  */
 export async function generarRespuesta(
-  historial: ConversationMessage[]
+  historial: ConversationMessage[],
+  contextoMemo?: string
 ): Promise<AgentReply> {
   // (B) Reintentos con backoff + (A) pool rotativo de fallback.
   // Cada intento usa SU PROPIO timeout; SOLO se reintentan errores
   // transitorios (red, 429, 5xx) — nunca nuestro propio timeout ni
   // errores permanentes. Al agotar → frase del pool rotativo (nunca
   // la misma dos veces seguidas).
+  const system = contextoMemo ? SYSTEM_PROMPT + "\n" + contextoMemo : SYSTEM_PROMPT;
   for (let intento = 0; intento <= RETRIES; intento++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -142,7 +144,7 @@ export async function generarRespuesta(
       const completion = await groq.chat.completions.create(
         {
           model: MODEL,
-          messages: [{ role: "system", content: SYSTEM_PROMPT }, ...historial],
+          messages: [{ role: "system", content: system }, ...historial],
           temperature: 0.9,
           max_tokens: 800,
           reasoning_effort: "none" as any,

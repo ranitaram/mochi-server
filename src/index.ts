@@ -57,7 +57,7 @@ async function main() {
     historial.push({ role: "user", content: input });
 
     // 1. Generar respuesta (con contexto de hechos en el system prompt)
-    const respuesta = await generarRespuesta(historial);
+    const respuesta = await generarRespuesta(historial, contextoHechos);
     console.log(`\nIvi [${respuesta.emocion}]: ${respuesta.texto}\n`);
 
     // 2. Generar audio

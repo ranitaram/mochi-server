@@ -154,7 +154,7 @@ app.post("/api/touch", async (req, res) => {
   );
 
   // 3. Generar respuesta de Ivi con el historial completo de la sesión
-  const respuesta = await generarRespuesta(sesion.historial);
+  const respuesta = await generarRespuesta(sesion.historial, contextoHechos);
   console.log(`[touch] Ivi [${respuesta.emocion}]: ${respuesta.texto} (${Date.now() - inicio}ms)`);
 
   // 4. Generar audio MP3 y agregar la respuesta al historial SOLO si se
