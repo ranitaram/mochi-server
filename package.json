@@ -21,6 +21,8 @@
   },
   "dependencies": {
     "@libsql/client": "^0.17.4",
+    "@neondatabase/serverless": "^0.10.4",
+    "@prisma/adapter-neon": "^6.19.3",
     "@prisma/client": "^6.19.3",
     "dotenv": "^16.4.5",
     "express": "^5.2.1",
