@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ivi · Redes WiFi</title>
+<style>
+  body{margin:0;background:#17181c;color:#e8e8f0;font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+  header{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.4rem;background:#23252b;border-bottom:1px solid #33363f}
+  header h1{font-size:1.1rem;margin:0;color:#7ed3a0}
+  header button{background:#4a4e59;color:#fff;border:0;border-radius:8px;padding:.45rem .9rem;cursor:pointer}
+  main{max-width:760px;margin:0 auto;padding:1.4rem}
+  .card{background:#23252b;border:1px solid #33363f;border-radius:12px;padding:1rem 1.2rem;margin-bottom:1.2rem}
+  .card h2{font-size:.95rem;margin:0 0 .8rem;text-transform:uppercase;letter-spacing:.05em;color:#9aa0b4}
+  form{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:.4rem}
+  input,select{flex:1 1 130px;padding:.55rem;border:1px solid #3a3d46;border-radius:8px;background:#17181c;color:#fff}
+  button.add{background:#2f9e63;border:0;color:#fff;padding:.55rem 1rem;border-radius:8px;cursor:pointer;font-weight:600}
+  button.add:hover{background:#38b074}
+  .btn{border:0;border-radius:7px;padding:.35rem .7rem;cursor:pointer;color:#fff;font-size:.8rem}
+  .btn-ed{background:#3b5f8a}
+  .btn-del{background:#a13b46}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:.5rem .45rem;border-bottom:1px solid #33363f;font-size:.9rem}
+  th{color:#9aa0b4;font-weight:500}
+  .empty{color:#7c8296;font-size:.9rem}
+  .err{color:#ff7b72;font-size:.85rem;margin-top:.5rem}
+  .ok{color:#7ed3a0;font-size:.85rem;margin-top:.5rem}
+  .toolbar{display:flex;gap:.5rem}
+</style>
+</head>
+<body>
+<header>
+  <h1>Ivi · Redes WiFi</h1>
+  <button id="logout">Cerrar sesión</button>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Dispositivo</h2>
+    <select id="selDevice"></select>
+    <p class="empty" id="noDevices" style="display:none">No hay ningún dispositivo. Creá uno abajo.</p>
+    <form id="formDevice" style="margin-top:.8rem">
+      <input name="nombre" placeholder="Nombre (ej. Ivi de la sala)" required>
+      <button class="add" type="submit">+ Crear dispositivo</button>
+    </form>
+    <p class="ok" id="tokenInfo" style="display:none"></p>
+  </div>
+
+  <div class="card" id="redesCard" style="display:none">
+    <h2>Redes WiFi</h2>
+    <form id="formRed">
+      <input name="ssid" placeholder="SSID" required>
+      <input name="password" type="password" placeholder="Contraseña" required>
+      <input name="prioridad" type="number" placeholder="Prioridad" value="100">
+      <button class="add" type="submit" id="btnRed">+ Agregar red</button>
+    </form>
+    <table id="tablaRedes">
+      <thead><tr><th>SSID</th><th>Prioridad</th><th style="text-align:right">Acciones</th></tr></thead>
+      <tbody id="tbodyRedes"></tbody>
+    </table>
+    <p class="empty" id="noRedes">Este dispositivo no tiene redes cargadas todavía.</p>
+  </div>
+
+  <p class="err" id="err"></p>
+  <p class="ok" id="ok"></p>
+</main>
+
+<script>
+let tokenSel = null;
+let editId = null;
+
+const $ = (id) => document.getElementById(id);
+
+function mostrar(j) {
+  $("err").textContent = "";
+  $("ok").textContent = "";
+  if (j && j.err) $("err").textContent = j.err;
+  if (j && j.ok) { $("ok").textContent = j.ok; setTimeout(() => ($("ok").textContent = ""), 4000); }
+}
+
+async function api(url, opts = {}) {
+  const r = await fetch(url, {
+    headers: opts.body ? { "Content-Type": "application/json" } : undefined,
+    ...opts,
+  });
+  if (r.status === 401) { location.href = "/login"; throw new Error("sin sesión"); }
+  return { status: r.status, body: await r.json().catch(() => ({})) };
+}
+
+async function cargarDispositivos() {
+  const { body } = await api("/api/admin/devices");
+  const sel = $("selDevice");
+  sel.innerHTML = "";
+  $("noDevices").style.display = body.dispositivos.length ? "none" : "";
+  if (!body.dispositivos.length) { $("redesCard").style.display = "none"; return; }
+  for (const d of body.dispositivos) {
+    const o = document.createElement("option");
+    o.value = d.token;
+    o.textContent = `${d.nombre} (${d.redes} redes)`;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => { tokenSel = sel.value; editId = null; $("btnRed").textContent = "+ Agregar red"; cargarRedes(); };
+  tokenSel = sel.value;
+  cargarRedes();
+}
+
+async function cargarRedes() {
+  if (!tokenSel) return;
+  const { body } = await api(`/api/devices/${tokenSel}/networks`);
+  $("redesCard").style.display = "";
+  const tbody = $("tbodyRedes");
+  tbody.innerHTML = "";
+  $("noRedes").style.display = body.redes.length ? "none" : "";
+  for (const r of body.redes) {
+    const tr = document.createElement("tr");
+    const tdSsid = document.createElement("td");
+    tdSsid.textContent = r.ssid;
+    const tdPri = document.createElement("td");
+    tdPri.textContent = r.prioridad;
+    const tdAcc = document.createElement("td");
+    tdAcc.style.textAlign = "right";
+    const bEd = document.createElement("button");
+    bEd.className = "btn btn-ed";
+    bEd.textContent = "Editar";
+    bEd.onclick = () => editarRed(r);
+    const bDel = document.createElement("button");
+    bDel.className = "btn btn-del";
+    bDel.textContent = "Borrar";
+    bDel.onclick = () => borrarRed(r.id);
+    tdAcc.append(bEd, " ", bDel);
+    tr.append(tdSsid, tdPri, tdAcc);
+    tbody.appendChild(tr);
+  }
+}
+
+function editarRed(r) {
+  editId = r.id;
+  $("formRed").ssid.value = r.ssid;
+  $("formRed").password.value = r.password;
+  $("formRed").prioridad.value = r.prioridad;
+  $("btnRed").textContent = "Guardar cambios";
+}
+
+function resetFormRed() {
+  editId = null;
+  $("formRed").reset();
+  $("formRed").prioridad.value = "100";
+  $("btnRed").textContent = "+ Agregar red";
+}
+
+$("formRed").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const payload = {
+    ssid: fd.get("ssid"),
+    password: fd.get("password"),
+    prioridad: Number(fd.get("prioridad") || 100),
+  };
+  try {
+    if (editId) {
+      const { status } = await api(`/api/devices/${tokenSel}/networks/${editId}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      mostrar(status < 400 ? { ok: "Red actualizada" } : { err: "No se pudo actualizar" });
+    } else {
+      const { status } = await api(`/api/devices/${tokenSel}/networks`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      mostrar(status < 400 ? { ok: "Red agregada. La próxima vez que Ivi tenga internet la descarga sola." } : { err: "No se pudo agregar" });
+    }
+    resetFormRed();
+    cargarRedes();
+  } catch (err) { /* 401 ya redirige */ }
+});
+
+async function borrarRed(id) {
+  if (!confirm("¿Borrar esta red?")) return;
+  await api(`/api/devices/${tokenSel}/networks/${id}`, { method: "DELETE" });
+  mostrar({ ok: "Red borrada" });
+  cargarRedes();
+}
+
+$("formDevice").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const { status, body } = await api("/api/admin/devices", {
+    method: "POST",
+    body: JSON.stringify({ nombre: fd.get("nombre") }),
+  });
+  if (status >= 400) { mostrar({ err: body.error || "No se pudo crear" }); return; }
+  const info = $("tokenInfo");
+  info.style.display = "";
+  info.textContent = `Creado "${body.nombre}". TOKEN (pegálo en config.h como DEVICE_TOKEN): ${body.token}`;
+  e.target.reset();
+  cargarDispositivos();
+});
+
+$("logout").addEventListener("click", async () => {
+  await fetch("/admin/logout", { method: "POST" });
+  location.href = "/login";
+});
+
+cargarDispositivos();
+</script>
+</body>
+</html>

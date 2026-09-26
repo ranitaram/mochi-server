@@ -2,6 +2,7 @@
 #define HTTP_CLIENT_H
 
 #include <Arduino.h>
+#include "wifi_store.h"
 
 struct IviReply {
     uint8_t* audio = nullptr;   // MP3 en memoria (PSRAM)
@@ -18,6 +19,11 @@ int httpSendAudio(const uint8_t* wav, size_t wavLen, IviReply& reply);
 
 // GET /health — devuelve el codigo HTTP (200 = servidor arriba), -1 si no conecta.
 int httpGetHealth();
+
+// GET /api/devices/{token}/networks (Bearer DEVICE_TOKEN). Trae la lista de
+// redes WiFi del dispositivo (orden: prioridad). Llena `out` (hasta maxOut).
+// Devuelve: N (cantidad de redes), 0 (sin redes), o <0 si error/desconocido.
+int httpFetchNetworks(WifiEntry* out, int maxOut);
 
 void httpClientFree(IviReply& reply);
 

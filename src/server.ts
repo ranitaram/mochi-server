@@ -6,17 +6,32 @@
 // V2 (futuro): WebSocket para streaming bidireccional en tiempo real.
 
 import "dotenv/config";
+import path from "path";
 import express from "express";
 import { transcribirAudio } from "./stt";
 import { generarRespuesta, extraerHechos, ConversationMessage } from "./llm";
 import { generarAudioMP3 } from "./tts";
 import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
+import { deviceRouter } from "./deviceRoutes";
+import { loginAdmin, logoutAdmin } from "./auth";
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
 // Body parser para audio crudo (ESP32 envía POST con Content-Type: audio/wav)
 app.use("/api/touch", express.raw({ type: "audio/wav", limit: "10mb" }));
+
+// JSON para el portal admin y la API de redes WiFi
+app.use(express.json());
+
+// Portal web (login + panel de redes WiFi)
+app.post("/admin/login", loginAdmin);
+app.post("/admin/logout", logoutAdmin);
+// extensions: permite acceder /admin -> admin.html y /login -> login.html
+app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
+
+// API de dispositivos / redes (Prisma + PostgreSQL)
+app.use(deviceRouter);
 
 // --- Memoria persistente ---
 let contextoHechos = "";

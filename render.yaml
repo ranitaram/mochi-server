@@ -15,7 +15,7 @@ services:
     runtime: node
     plan: free            # free tier: duerme tras ~15 min sin tráfico
     region: oregon
-    buildCommand: npm install && npm run build
+    buildCommand: npm install && npx prisma generate && npx prisma migrate deploy && npm run build
     startCommand: npm start
     healthCheckPath: /health
     autoDeploy: true
@@ -35,5 +35,15 @@ services:
       - key: TURSO_AUTH_TOKEN
         sync: false
       - key: SERVER_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_USER
+        value: ivi
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_SECRET
+        sync: false
+      - key: WIFI_ENC_KEY
         sync: false
       # PORT lo inyecta Render solo; no definirlo acá.

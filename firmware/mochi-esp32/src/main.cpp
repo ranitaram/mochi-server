@@ -3,6 +3,7 @@
 #include <math.h>
 #include "config.h"
 #include "wifi_manager.h"
+#include "wifi_store.h"
 #include "audio_record.h"
 #include "audio_play.h"
 #include "http_client.h"
@@ -288,6 +289,18 @@ void loop() { delay(1000); }
 // ------------------------------------------------------------------
 #if !TEST_OLED && !TEST_MIC && !TEST_AMP && !TEST_JOY && !TEST_ALL && !TEST_MP3 && !TEST_BATTERY
 
+// Trae del servidor la lista de redes WiFi de esta Ivi (si hay DEVICE_TOKEN
+// configurado) y la deja guardada en NVS con el orden de prioridad.
+static void syncNetworks() {
+    wifiStoreInit();
+    WifiEntry entries[WIFI_MAX_NETWORKS];
+    int n = httpFetchNetworks(entries, WIFI_MAX_NETWORKS);
+    if (n >= 0) {
+        wifiStoreReplaceAll(entries, n);
+        Serial.printf("[fsm] Redes sincronizadas desde servidor: %d\n", n);
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     delay(300);
@@ -295,6 +308,7 @@ void setup() {
 #if SELF_TEST
     Serial.println("[fsm] Modo SELF-TEST activo");
     wifiConnect();
+    syncNetworks();
     selfTestRun();
     Serial.println("[fsm] Self-test terminado. Esperando...");
 #else
@@ -306,6 +320,7 @@ void setup() {
     joyCalibrate();          // auto-calibra el centro del joystick en reposo
     oledShowBoot("Conectando a", "casa...");
     wifiConnect();
+    syncNetworks();
     if (wifiConnected()) {
         oledShowText("Ya estoy", "lista!");
         delay(900);

@@ -1,0 +1,36 @@
+// Prisma schema — Ivi backend
+// Dispositivo (el ESP32 de Ivi) + redes WiFi que puede usar, administradas
+// desde el portal web. Las contraseñas se guardan CIFRADAS (AES-256-GCM)
+// vía src/crypto.ts; este campo nunca contiene texto plano.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Device {
+  id        String        @id @default(uuid())
+  nombre    String
+  token     String        @unique // token que el ESP32 manda en Authorization: Bearer
+  redes     WifiNetwork[]
+  createdAt DateTime      @default(now())
+
+  @@map("devices")
+}
+
+model WifiNetwork {
+  id        String   @id @default(uuid())
+  deviceId  String
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  ssid      String
+  password  String // ciphertext AES-256-GCM ("iv:tag:cipher" en base64)
+  prioridad Int     @default(100) // menor = se prueba primero
+  createdAt DateTime @default(now())
+
+  @@index([deviceId, prioridad])
+  @@map("wifi_networks")
+}

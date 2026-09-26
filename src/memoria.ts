@@ -14,10 +14,15 @@ const url = process.env.TURSO_DATABASE_URL;
 let client: Client | null = null;
 
 if (url) {
-  client = createClient({
-    url,
-    authToken: process.env.TURSO_AUTH_TOKEN,
-  });
+  try {
+    client = createClient({
+      url,
+      authToken: process.env.TURSO_AUTH_TOKEN,
+    });
+  } catch (err: any) {
+    console.warn("[memoria] No se pudo crear el cliente Turso:", err?.message);
+    client = null;
+  }
 }
 
 function memoriaDeshabilitada(nombre: string): boolean {

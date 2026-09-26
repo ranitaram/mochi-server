@@ -3,6 +3,7 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 #include <string.h>
 
@@ -44,6 +45,54 @@ int httpGetHealth() {
     }
     http.end();
     return -1;
+}
+
+// Sincroniza las redes WiFi de esta Ivi desde el servidor. Llamala con
+// DEVICE_TOKEN seteado en config.h; con token vacio devuelve -1 (sin token).
+int httpFetchNetworks(WifiEntry* out, int maxOut) {
+    if (strlen(DEVICE_TOKEN) == 0) {
+        Serial.println("[http] DEVICE_TOKEN vacio: sin sincronizacion de redes.");
+        return -1;
+    }
+
+    HTTPClient http;
+    http.setTimeout(20000);
+    String url = baseUrl() + "/api/devices/" + DEVICE_TOKEN + "/networks";
+
+    httpBegin(http, url);
+    http.addHeader("Authorization", String("Bearer ") + DEVICE_TOKEN);
+
+    int code = http.GET();
+    int count = 0;
+    if (code == HTTP_CODE_OK) {
+        String body = http.getString();
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, body);
+        if (!err && doc.is<JsonArray>()) {
+            JsonArray arr = doc.as<JsonArray>();
+            size_t len = arr.size();
+            for (size_t i = 0; i < len && count < maxOut; i++) {
+                const char* ssid = arr[i]["ssid"] | "";
+                const char* pass = arr[i]["password"] | "";
+                if (ssid[0] == 0) continue;
+                strncpy(out[count].ssid, ssid, sizeof(out[count].ssid) - 1);
+                strncpy(out[count].pass, pass, sizeof(out[count].pass) - 1);
+                out[count].ssid[sizeof(out[count].ssid) - 1] = 0;
+                out[count].pass[sizeof(out[count].pass) - 1] = 0;
+                count++;
+            }
+            Serial.printf("[http] Redes del servidor: %u\n", (unsigned)count);
+        } else {
+            Serial.println("[http] Respuesta /networks invalida (JSON).");
+            count = -2;
+        }
+    } else if (code > 0) {
+        Serial.printf("[http] /networks HTTP %d (dispositivo no registrado?)\n", code);
+        count = -1;
+    }
+
+    http.end();
+    return count;
 }
 
 int httpSendAudio(const uint8_t* wav, size_t wavLen, IviReply& reply) {

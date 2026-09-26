@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ivi · Login</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#17181c;color:#e8e8f0;font-family:system-ui,-apple-system,sans-serif}
+  main{background:#23252b;padding:2rem 2.4rem;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.4);width:300px}
+  h1{font-size:1.3rem;margin:0 0 1.2rem;color:#7ed3a0}
+  form{display:flex;flex-direction:column;gap:.7rem}
+  input{padding:.6rem;border:1px solid #3a3d46;border-radius:8px;background:#17181c;color:#fff}
+  button{padding:.65rem;border:0;border-radius:8px;background:#2f9e63;color:#fff;font-weight:600;cursor:pointer}
+  button:hover{background:#38b074}
+  #msg{margin-top:.8rem;color:#ff7b72;font-size:.85rem}
+</style>
+</head>
+<body>
+<main>
+  <h1>Panel de Ivi</h1>
+  <form id="login">
+    <input name="user" autocomplete="username" placeholder="Usuario" required>
+    <input name="password" type="password" autocomplete="current-password" placeholder="Contraseña" required>
+    <button type="submit">Entrar</button>
+  </form>
+  <p id="msg"></p>
+</main>
+<script>
+document.getElementById("login").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const msg = document.getElementById("msg");
+  try {
+    const r = await fetch("/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user: fd.get("user"), password: fd.get("password") }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) location.href = j.redirect || "/admin";
+    else msg.textContent = j.error || "Error de login";
+  } catch (err) {
+    msg.textContent = "No se pudo conectar";
+  }
+});
+</script>
+</body>
+</html>

@@ -24,6 +24,11 @@
 #define BACKEND_URL      "https://ivi-backend.onrender.com"
 #define SERVER_PATH      "/api/touch"
 
+// Token del dispositivo (se crea con `npm run crear-device` en el backend).
+// Es el Bearer que identifica a esta Ivi en el servidor. Dejar "" si aun no
+// se crea el dispositivo (la app funciona pero no sincroniza redes WiFi).
+#define DEVICE_TOKEN     ""
+
 // Modo auto-test de arranque (validacion sin piezas): corre el test al
 // encender y loguea por Serial. Poner a 0 cuando lleguen las piezas.
 #define SELF_TEST        1
