@@ -8,6 +8,8 @@
 import "dotenv/config";
 import path from "path";
 import dns from "node:dns";
+import dnsProm from "node:dns/promises";
+import fs from "node:fs/promises";
 import express from "express";
 import { transcribirAudio } from "./stt";
 import { generarRespuesta, extraerHechos, ConversationMessage } from "./llm";
@@ -20,8 +22,31 @@ import { debugRouter } from "./debug";
 // El resolver del host (Render) devuelve IPv6 antes que IPv4 y Prisma conecta
 // a la primera IP, fallando con P1001 (ENETUNREACH por IPv6) aunque el server
 // responda bien por IPv4 (verificado con /debug/net). Forzamos IPv4-first en
-// TODO el proceso (afecta al engine de Prisma, que es un addon de Node).
+// el proceso (afecta conexiones Node) ...
 dns.setDefaultResultOrder("ipv4first");
+
+// ... y además, para el engine RUST de Prisma (resuelve por libc, no por
+// Node), mapeamos el host de DATABASE_URL a su IPv4 en /etc/hosts al boot.
+// Así getaddrinfo devuelve solo IPv4 y Prisma conecta con el SNI/hostname
+// original (Neon enruta por hostname; una IP literal no funciona).
+async function forzarIPv4EnHosts(): Promise<void> {
+  const m = process.env.DATABASE_URL?.match(/@([^:/\s]+):(\d+)/);
+  const host = m?.[1];
+  if (!host || /^\d+(\.\d+){3}$/.test(host)) return;
+  try {
+    const hosts = await fs.readFile("/etc/hosts", "utf8");
+    if (hosts.includes("\n" + host)) {
+      console.log(`[boot] FASE2 gateway: /etc/hosts ya fuerza IPv4 para ${host}`);
+      return;
+    }
+    const [ip] = await dnsProm.resolve4(host);
+    await fs.appendFile("/etc/hosts", `\n${ip} ${host}\n`);
+    console.log(`[boot] FASE2 gateway: ${host} -> ${ip} (IPv4 forzado en /etc/hosts)`);
+  } catch (err: any) {
+    console.warn(`[boot] FASE2 gateway: no pude escribir /etc/hosts (${err?.message})`);
+  }
+}
+forzarIPv4EnHosts();
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
