@@ -9,13 +9,17 @@ import "dotenv/config";
 import path from "path";
 import express from "express";
 import { transcribirAudio } from "./stt";
-import { generarRespuesta, extraerHechos, ConversationMessage } from "./llm";
+import { generarRespuesta, extraerHechos } from "./llm";
 import { generarAudioMP3 } from "./tts";
 import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
 import { deviceRouter } from "./deviceRoutes";
 import { loginAdmin, logoutAdmin } from "./auth";
+import { obtenerSesion, agregarMensaje } from "./session";
 
 const app = express();
+// Confiar en el X-Forwarded-For de los proxies (Render) para que req.ip sea la
+// IP real del ESP32 y las sesiones queden aisladas por dispositivo.
+app.set("trust proxy", true);
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
 // Body parser para audio crudo (ESP32 envía POST con Content-Type: audio/wav)
@@ -140,16 +144,22 @@ app.post("/api/touch", async (req, res) => {
   }
   console.log(`[touch] Transcripción: "${textoUsuario}" (${Date.now() - inicio}ms)`);
 
-  // 2. Mantener historial de conversación (se resetea entre sesiones del ESP32)
-  const historial: ConversationMessage[] = [
-    { role: "user", content: textoUsuario },
-  ];
+  // 2. Sesión de conversación: cada cliente tiene su historial en memoria.
+  //    Se abre de cero si pasó SESSION_IDLE_MS (default 15 min) sin hablar.
+  const claveSesion = req.ip ?? req.socket.remoteAddress ?? "desconocido";
+  const sesion = obtenerSesion(claveSesion);
+  agregarMensaje(sesion, { role: "user", content: textoUsuario });
+  console.log(
+    `[touch] Sesión ${claveSesion}: historial de ${sesion.historial.length} mensaje(s)`
+  );
 
-  // 3. Generar respuesta de Ivi
-  const respuesta = await generarRespuesta(historial);
+  // 3. Generar respuesta de Ivi con el historial completo de la sesión
+  const respuesta = await generarRespuesta(sesion.historial);
   console.log(`[touch] Ivi [${respuesta.emocion}]: ${respuesta.texto} (${Date.now() - inicio}ms)`);
 
-  // 4. Generar audio MP3
+  // 4. Generar audio MP3 y agregar la respuesta al historial SOLO si se
+  //    logró producir el audio (si no, el usuario no la oyó y mejor que la
+  //    conversación no la recuerde).
   try {
     const mp3Buffer = await generarAudioMP3(respuesta.texto);
 
@@ -162,15 +172,16 @@ app.post("/api/touch", async (req, res) => {
     });
     res.send(mp3Buffer);
     console.log(`[touch] Respuesta enviada: ${mp3Buffer.length} bytes MP3 (${Date.now() - inicio}ms total)`);
+
+    agregarMensaje(sesion, { role: "assistant", content: respuesta.texto });
   } catch (err: any) {
     console.error("[touch] Error generando audio:", err.message);
     res.status(500).json({ error: "Error generando audio" });
     return;
   }
 
-  // 5. Extraer hechos en background (fire-and-forget)
-  historial.push({ role: "assistant", content: respuesta.texto });
-  extraerHechos(historial)
+  // 5. Extraer hechos en background (fire-and-forget) de la conversación actual
+  extraerHechos(sesion.historial)
     .then((nuevos) => {
       if (nuevos.length > 0) {
         console.log(`  [memoria] +${nuevos.length} hecho(s) guardado(s)`);
