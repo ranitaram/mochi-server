@@ -1,0 +1,39 @@
+# Render Blueprint — Ivi backend
+# Cómo desplegar (dos caminos):
+#   1) Push de este repo a GitHub y conectar en Render -> New -> Blueprint,
+#      o
+#   2) Nuevo Web Service manual (Node) apuntando al repo, copiando estos
+#      mismos build/start commands y variables.
+#
+# Las variables marcadas con `sync: false` son SECRETOS: Render las pide
+# a mano al crear el servicio (o las cargás después en Settings -> Environment).
+# Las de `value` ya traen el valor por defecto del proyecto.
+
+services:
+  - type: web
+    name: ivi-backend
+    runtime: node
+    plan: free            # free tier: duerme tras ~15 min sin tráfico
+    region: oregon
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: EDGE_TTS_VOICE
+        value: es-MX-JorgeNeural
+      - key: TTS_PITCH
+        value: +20Hz
+      - key: TTS_RATE
+        value: "1.1"
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: SERVER_URL
+        sync: false
+      # PORT lo inyecta Render solo; no definirlo acá.

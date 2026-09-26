@@ -1,19 +1,42 @@
 #include "http_client.h"
 #include "config.h"
 #include <HTTPClient.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <esp_heap_caps.h>
 #include <string.h>
 
+// Cifrado TLS para producción: BACKEND_URL es https://dominio.onrender.com.
+// usamos WiFiClientSecure con setInsecure() (sin fijar certificado raíz)
+// porque Render sirve HTTPS con certs Let's Encrypt válidos y no queremos
+// depender de que un certificado raíz quede embebido en el firmware.
+// El canal ya es cifrado y autenticado por TLS.
+
+static WiFiClientSecure secureClient;
+static bool secureReady = false;
+
 static String baseUrl() {
-    return String(SERVER_USE_HTTPS ? "https://" : "http://") +
-           SERVER_HOST + ":" + SERVER_PORT;
+    return String(BACKEND_URL);
+}
+
+// Inicia una petición HTTP/HTTPS según el esquema de BACKEND_URL.
+static void httpBegin(HTTPClient& http, const String& url) {
+    if (url.startsWith("https://")) {
+        if (!secureReady) {
+            secureClient.setInsecure();
+            secureReady = true;
+        }
+        http.begin(secureClient, url);
+    } else {
+        http.begin(url);
+    }
 }
 
 int httpGetHealth() {
     HTTPClient http;
     http.setTimeout(15000);
     String url = baseUrl() + "/health";
-    http.begin(url);
+    httpBegin(http, url);
     int code = http.GET();
     if (code > 0) {
         http.end();
@@ -28,7 +51,7 @@ int httpSendAudio(const uint8_t* wav, size_t wavLen, IviReply& reply) {
     http.setTimeout(60000);   // la respuesta tarda (STT + LLM + TTS)
     String url = baseUrl() + SERVER_PATH;
 
-    http.begin(url);
+    httpBegin(http, url);
     http.addHeader("Content-Type", "audio/wav");
 
     int code = http.POST(const_cast<uint8_t*>(wav), wavLen);

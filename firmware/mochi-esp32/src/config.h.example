@@ -19,11 +19,10 @@
 #define WIFI_PASSWORD_3    ""
 
 // ---------------------- Servidor -------------------------
-// IP o hostname del servidor (mochi-server). Ej: "192.168.1.50" o "midominio.ddns.net"
-#define SERVER_HOST      "192.168.1.50"
-#define SERVER_PORT      3001
+// URL pública del backend (Render). Incluye el esquema HTTPS.
+// Ej: "https://ivi-backend.onrender.com"
+#define BACKEND_URL      "https://ivi-backend.onrender.com"
 #define SERVER_PATH      "/api/touch"
-#define SERVER_USE_HTTPS 0   // 0 = http, 1 = https
 
 // Modo auto-test de arranque (validacion sin piezas): corre el test al
 // encender y loguea por Serial. Poner a 0 cuando lleguen las piezas.

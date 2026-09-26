@@ -36,8 +36,12 @@ async function initMemory() {
 }
 
 // --- Health check ---
+// Endpoint de "despertar"/healthcheck para Render: NO toca base de datos ni
+// servicios de IA. Responde 200 "ok" lo más rápido posible (cold start de
+// Render + chequeo de vida del free tier que duerme a los 15 min).
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", servicio: "ivi-server", version: "1.0.0" });
+  res.set("Cache-Control", "no-store");
+  res.status(200).send("ok");
 });
 
 /**
@@ -162,12 +166,18 @@ app.post("/api/touch", async (req, res) => {
 });
 
 // --- Iniciar servidor ---
+// El listen() arranca INMEDIATO (sin esperar a la memoria) para que /health
+// responda apenas el proceso levante, aunque la conexión a Turso tarde o falle.
+// La memoria se inicializa en background y se "autoretira" si no hay DB.
 async function main() {
-  await initMemory();
   app.listen(PORT, () => {
     console.log(`Ivi server escuchando en http://localhost:${PORT}`);
     console.log(`  POST /api/touch — recibir audio del ESP32`);
-    console.log(`  GET  /health    — health check`);
+    console.log(`  GET  /health    — health check (rápido, sin DB)`);
+  });
+
+  initMemory().catch((err) => {
+    console.error("Memoria no disponible (el servidor sigue andando):", err.message);
   });
 }
 
