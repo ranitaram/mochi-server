@@ -7,6 +7,7 @@
 
 import "dotenv/config";
 import path from "path";
+import dns from "node:dns";
 import express from "express";
 import { transcribirAudio } from "./stt";
 import { generarRespuesta, extraerHechos, ConversationMessage } from "./llm";
@@ -15,6 +16,12 @@ import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
 import { deviceRouter } from "./deviceRoutes";
 import { loginAdmin, logoutAdmin } from "./auth";
 import { debugRouter } from "./debug";
+
+// El resolver del host (Render) devuelve IPv6 antes que IPv4 y Prisma conecta
+// a la primera IP, fallando con P1001 (ENETUNREACH por IPv6) aunque el server
+// responda bien por IPv4 (verificado con /debug/net). Forzamos IPv4-first en
+// TODO el proceso (afecta al engine de Prisma, que es un addon de Node).
+dns.setDefaultResultOrder("ipv4first");
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
