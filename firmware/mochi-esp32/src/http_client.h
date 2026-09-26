@@ -20,6 +20,11 @@ int httpSendAudio(const uint8_t* wav, size_t wavLen, IviReply& reply);
 // GET /health — devuelve el codigo HTTP (200 = servidor arriba), -1 si no conecta.
 int httpGetHealth();
 
+// Ping de salud corto para el arranque (timeoutMs pequeno). Igual que
+// httpGetHealth pero sin esperar 15s: ideal para despertar al server y
+// repetir hasta que responda 200.
+int httpPingHealth(int timeoutMs);
+
 // GET /api/devices/{token}/networks (Bearer DEVICE_TOKEN). Trae la lista de
 // redes WiFi del dispositivo (orden: prioridad). Llena `out` (hasta maxOut).
 // Devuelve: N (cantidad de redes), 0 (sin redes), o <0 si error/desconocido.

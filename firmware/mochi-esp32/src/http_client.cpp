@@ -33,18 +33,27 @@ static void httpBegin(HTTPClient& http, const String& url) {
     }
 }
 
-int httpGetHealth() {
+// GET /health con timeout configurable. Devuelve el codigo HTTP (>0) o -1.
+static int httpHealthWithTimeout(int timeoutMs) {
     HTTPClient http;
-    http.setTimeout(15000);
+    http.setTimeout(timeoutMs);
     String url = baseUrl() + "/health";
     httpBegin(http, url);
     int code = http.GET();
-    if (code > 0) {
-        http.end();
-        return code;
-    }
     http.end();
-    return -1;
+    return code > 0 ? code : -1;
+}
+
+int httpGetHealth() {
+    return httpHealthWithTimeout(15000);
+}
+
+// Ping de salud CORTO para el arranque: en Render el server duerme tras
+// 15 min inactivo; el primer /health lo "despierta" (el request queda
+// esperando el cold-start). Usar timeout bajo para no trabar el boot y
+// repetir el ping cada unos segundos hasta que responda 200.
+int httpPingHealth(int timeoutMs) {
+    return httpHealthWithTimeout(timeoutMs);
 }
 
 // Sincroniza las redes WiFi de esta Ivi desde el servidor. Llamala con

@@ -33,6 +33,7 @@ static unsigned long lastTalkTick = 0;
 static uint16_t talkPhase = 0;
 static unsigned long lastBattPoll = 0;
 static bool bootMode = false;
+static int bootCountdown = -1;   // >=0: modo "esperando al server" con numero
 
 void oledInit() {
     if (!wireReady) {
@@ -203,6 +204,25 @@ static void drawFace() {
     display.clearDisplay();
 
     if (bootMode) {
+        // Modo countdown: la Ivi despierta al servidor (Render duerme a los
+        // 15 min) y muestra los segundos que faltan en grande, con textos.
+        if (bootCountdown >= 0) {
+            char s[4];
+            snprintf(s, sizeof(s), "%d", bootCountdown < 0 ? 0 : bootCountdown);
+            display.setTextSize(2);
+            int16_t x1, y1;
+            uint16_t w, h;
+            display.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
+            display.setCursor((SCREEN_WIDTH - w) / 2, 16);
+            display.print(s);
+            display.setTextSize(1);
+            if (txt1[0]) { display.setCursor(0, 44); display.print(txt1); }
+            if (txt2[0]) { display.setCursor(0, 54); display.print(txt2); }
+            drawBatteryIcon();
+            display.display();
+            return;
+        }
+
         // Pantalla de "despertando de la siesta": ojos cerrados (asustados de
         // dormir), animacion zZz auto-timed por millis() y dos lineas de texto
         // al centro. Reemplaza la cara normal durante el boot del WiFi.
@@ -300,12 +320,24 @@ void oledShowText(const char* line1, const char* line2) {
 // a oledShowFace() (o oledShowText()) sale del modo boot.
 void oledShowBoot(const char* line1, const char* line2) {
     bootMode = true;
+    bootCountdown = -1;   // vuelve al modo zZz (no countdown)
     processing = false;
     talking = false;
     showTextBox = true;
     textVisible = true;
     snprintf(txt1, sizeof(txt1), "%s", line1 ? line1 : "");
     snprintf(txt2, sizeof(txt2), "%s", line2 ? line2 : "");
+    drawFace();
+}
+
+// Cuenta regresiva del despertado del server: numero grande + textos (los
+// mismos que haya seteado oledShowBoot()). Solo repinta cuando cambia el
+// valor, para que el OLED no flaquee en cada poll.
+void oledShowCountdown(int segsLeft) {
+    if (!panelReady) return;
+    bootMode = true;
+    processing = false;
+    bootCountdown = segsLeft < 0 ? 0 : segsLeft;
     drawFace();
 }
 

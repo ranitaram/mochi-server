@@ -18,6 +18,7 @@ void oledShowFace(IviFace face);
 void oledShowProcessing(bool on);
 void oledShowText(const char* line1, const char* line2 = nullptr);
 void oledShowBoot(const char* line1, const char* line2 = nullptr);
+void oledShowCountdown(int segsLeft);   // numero grande + textos, para esperar al server
 void oledBootTick();
 void oledTestScreen(bool on);   // pantalla completa blanca (on) o negra (off)
 void oledLoop();   // llama periodicamente para animar parpadeo/puntos

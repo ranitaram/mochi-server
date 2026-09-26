@@ -301,6 +301,34 @@ static void syncNetworks() {
     }
 }
 
+// Fase 4: despertado del server. Tras conectar al WiFi, el server puede estar
+// dormido (Render free duerme tras ~15 min sin pedidos): hacemos ping corto a
+// /health (que a la vez lo despierta) y esperamos hasta SERVER_WAKE_MAX_MS,
+// mostrando en el OLED la cuenta regresiva. Vuelve 0 si el server respondio
+// 200, -1 si expiro el tiempo o no hay WiFi.
+static int waitServerWake() {
+    if (!wifiConnected()) return -1;
+    const unsigned long inicio = millis();
+    int segsMostrado = -1;
+    while ((unsigned long)(millis() - inicio) < SERVER_WAKE_MAX_MS) {
+        int r = httpPingHealth(4000);
+        if (r == 200) {
+            Serial.println("[fsm] Servidor listo (health 200)");
+            return 0;
+        }
+        unsigned long restante = SERVER_WAKE_MAX_MS - (unsigned long)(millis() - inicio);
+        int segs = (int)((restante + 999) / 1000);
+        if (segs != segsMostrado) {
+            segsMostrado = segs;
+            Serial.printf("[fsm] Esperando al server... %ds (health %d)\n", segs, r);
+            oledShowCountdown(segs);
+        }
+        delay(restante < SERVER_WAKE_POLL_MS ? restante : SERVER_WAKE_POLL_MS);
+    }
+    Serial.println("[fsm] Server no respondio a tiempo; sigo con lo que haya.");
+    return -1;
+}
+
 void setup() {
     Serial.begin(115200);
     delay(300);
@@ -320,11 +348,16 @@ void setup() {
     joyCalibrate();          // auto-calibra el centro del joystick en reposo
     oledShowBoot("Conectando a", "casa...");
     wifiConnect();
-    syncNetworks();
     if (wifiConnected()) {
-        oledShowText("Ya estoy", "lista!");
-        delay(900);
+        // Fase 4: despertar al server (Render duerme) con cuenta regresiva
+        // en el OLED; SOLO cuando /health responda 200 sincronizamos redes.
+        oledShowBoot("Ya estoy casi", "lista...");
+        if (waitServerWake() == 0) {
+            syncNetworks();
+        }
     }
+    oledShowText("Ya estoy", "lista!");
+    delay(900);
     oledShowFace(IviFace::NEUTRAL);
     audioPlayInit();
 #endif

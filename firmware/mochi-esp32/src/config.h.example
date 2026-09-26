@@ -24,6 +24,12 @@
 #define BACKEND_URL      "https://ivi-backend.onrender.com"
 #define SERVER_PATH      "/api/touch"
 
+// Fase 4 - despertado del server: al bootear Ivi hace ping a /health cada
+// SERVER_WAKE_POLL_MS hasta que responda 200 (max SERVER_WAKE_MAX_MS), con
+// cuenta regresiva en el OLED. Util si el server duerme por inactividad.
+#define SERVER_WAKE_MAX_MS   40000UL
+#define SERVER_WAKE_POLL_MS  3000UL
+
 // Token del dispositivo (se crea con `npm run crear-device` en el backend).
 // Es el Bearer que identifica a esta Ivi en el servidor. Dejar "" si aun no
 // se crea el dispositivo (la app funciona pero no sincroniza redes WiFi).
