@@ -5,6 +5,8 @@
 #include <math.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/timers.h"
 #include "config.h"
 #include "battery.h"
 
@@ -102,21 +104,26 @@ void oledInit() {
     lastPx = lastPy = 0;
 }
 
-// Elige un nuevo objetivo de pupila dentro del ojo (±2 px, siempre dentro del
-// circulo blanco de radio EYE_R) y programa cuándo volver a moverse.
+// Elige un nuevo objetivo de pupila (mas viaje y mas frecuente al hablar) y
+// programa cuando volver a moverse.
 static void gazeRetarget() {
     uint32_t r = animRng();
-    int vx = (int)(r & 15) - 7;                  // -7..8
-    int vy = (int)(((r >> 4) & 15)) - 7;
-    gazeTargetX = vx < -2 ? -2 : (vx > 2 ? 2 : vx);
-    gazeTargetY = vy < -2 ? -2 : (vy > 2 ? 2 : vy);
-    nextGaze = millis() + 900 + (unsigned)((r >> 8) & 1023);   // 0.9..1.9s
+    int amp = talking ? 3 : 2;                    // al hablar se mueve mas
+    int vx = ((int)(r & 63)) - 31;                // -31..32
+    int vy = ((int)((r >> 6) & 63)) - 31;
+    gazeTargetX = vx < -amp ? -amp : (vx > amp ? amp : vx);
+    gazeTargetY = vy < -amp ? -amp : (vy > amp ? amp : vy);
+    uint32_t base = talking ? 600 : 900;
+    uint32_t span = talking ? 1023 : 2047;
+    nextGaze = millis() + base + (unsigned)((r >> 12) & span);
 }
 
-// Acerca la pupila al objetivo; al amarrarse, espera nextGaze y re-elige.
+// Acerca la pupila al objetivo (mas rapido al hablar); al amarrarse, espera
+// nextGaze y re-elige.
 static void gazeStep() {
-    gazeX += ((float)gazeTargetX - gazeX) * 0.35f;
-    gazeY += ((float)gazeTargetY - gazeY) * 0.35f;
+    float k = talking ? 0.5f : 0.35f;
+    gazeX += ((float)gazeTargetX - gazeX) * k;
+    gazeY += ((float)gazeTargetY - gazeY) * k;
     if (fabsf((float)gazeTargetX - gazeX) < 0.15f &&
         fabsf((float)gazeTargetY - gazeY) < 0.15f &&
         (long)(millis() - nextGaze) >= 0) {
@@ -426,17 +433,20 @@ void oledTalkTick() {
     lastTalkTick = now;
     talkPhase++;
 
-    // 1) boca: sigue el nivel de voz real (attack 0.55)
-    mouthF += ((float)speechLevel - mouthF) * 0.55f;
+    // 1) boca: sigue el nivel de voz real, pero con un PISO de ritmo silabico
+    //    para que nunca quede quieta mientras habla (aun en micro-silencios).
+    uint8_t rhythm = (uint8_t)(1 + (animRng() & 3));        // 1..4
+    float target = speechLevel > rhythm ? (float)speechLevel : (float)rhythm;
+    mouthF += (target - mouthF) * 0.6f;
     mouthOpen = (uint8_t)(mouthF + 0.5f);
     if (mouthOpen > 10) mouthOpen = 10;
 
-    // 2) balanceo lateral: mas voz = mas amplitud (1..5 px)
-    swayPhase += 0.55;
-    double amp = 1.0 + speechLevel * 0.4;
+    // 2) balanceo lateral: SIEMPRE >=2px al hablar; crece y acelera con la voz
+    swayPhase += 0.5 + speechLevel * 0.04;
+    double amp = 2.0 + speechLevel * 0.6;                   // 2..8 px
     swayX = (int)(sin(swayPhase) * amp);
 
-    // 3) pupilas que se pasean mientras habla
+    // 3) pupilas vivas mientras habla
     gazeStep();
 
     // 4) parpadeo natural
@@ -453,4 +463,31 @@ void oledTalkTick() {
 void oledSetSpeechLevel(uint8_t level) {
     if (level > 10) level = 10;
     speechLevel = level;
+}
+
+// Timer de animacion de fondo: mientras la tarea principal esta bloqueada
+// (grabando o esperando la respuesta del server), este timer avanza oledLoop()
+// para que los puntos del "pensando" no se congelen. Solo hay un escritor de
+// I2C a la vez (la main no toca el OLED mientras corre), asi que es seguro.
+static TimerHandle_t animTimer = nullptr;
+
+static void animTimerCb(TimerHandle_t t) {
+    (void)t;
+    oledLoop();
+}
+
+void oledAnimStart() {
+    if (!panelReady) return;
+    if (animTimer == nullptr) {
+        animTimer = xTimerCreate("anim", pdMS_TO_TICKS(120), pdTRUE, (void*)0, animTimerCb);
+    }
+    if (animTimer && xTimerIsTimerActive(animTimer) != pdTRUE) {
+        xTimerStart(animTimer, 0);
+    }
+}
+
+void oledAnimStop() {
+    if (animTimer && xTimerIsTimerActive(animTimer) == pdTRUE) {
+        xTimerStop(animTimer, 0);
+    }
 }

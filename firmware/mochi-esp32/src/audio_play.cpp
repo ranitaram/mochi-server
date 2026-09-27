@@ -13,22 +13,31 @@
 
 // ------------------------------------------------------------------
 //  Envolvente del nivel de voz: la boca del OLED sigue el audio REAL que se
-//  decodifica. ConsumeSample() actualiza una envolvente aca (attack rapido /
-//  release lento) y la inyecta via oledSetSpeechLevel() solamente cuando
-//  cambia. Es barato (~44k llamadas/s, una suma y dos mul), no toca el I2S.
+//  decodifica. ConsumeSample() alimenta un pico RAPIDO (attack 0.9 / release
+//  0.15) y lo inyecta via oledSetSpeechLevel() (0..10) solo cuando cambia.
+//  Es barato (~44k llamadas/s), no toca el I2S.
 // ------------------------------------------------------------------
-static float speechEnv = 0.0f;
+#define DEBUG_TALK 1   // log [talk] 1x/s mientras se decodifica (calibracion)
+static float speechPeak = 0.0f;
 static uint8_t speechEnvLevel = 0;
 
 static void speechEnvUpdate(int16_t l, int16_t r) {
     int32_t a = l; if (a < 0) a = -a;
     int32_t b = r; if (b < 0) b = -b;
-    float m = (float)(a + b) * (10.0f / 65536.0f);   // 0..10 aprox
-    if (m > speechEnv) speechEnv += (m - speechEnv) * 0.35f;
-    else               speechEnv += (m - speechEnv) * 0.08f;
-    uint8_t lvl = (uint8_t)speechEnv;
+    int32_t m = a > b ? a : b;
+    float peak = (float)m * (1.0f / 32768.0f);      // 0..1
+    if (peak > speechPeak) speechPeak += (peak - speechPeak) * 0.9f;
+    else                   speechPeak += (peak - speechPeak) * 0.15f;
+    uint8_t lvl = (uint8_t)(speechPeak * 12.0f + 0.5f);
     if (lvl > 10) lvl = 10;
     if (lvl != speechEnvLevel) { speechEnvLevel = lvl; oledSetSpeechLevel(lvl); }
+#if DEBUG_TALK
+    static uint32_t lastTalkLog = 0;
+    if (millis() - lastTalkLog >= 500) {
+        lastTalkLog = millis();
+        Serial.printf("[talk] pico=%.2f lvl=%d\n", (double)speechPeak, (int)speechEnvLevel);
+    }
+#endif
 }
 
 // UN solo periferico I2S (I2S_NUM_0) y UN solo driver (i2s_std - nuevo).

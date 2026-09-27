@@ -28,6 +28,13 @@ void oledLoop();   // llama periodicamente para animar parpadeo, mirada y puntos
 void oledShowTalking(bool on);
 void oledTalkTick();
 
+// Animacion de fondo para las ventanas bloqueantes (grabacion y espera de la
+// respuesta del server): corre un timer de FreeRTOS que avanza oledLoop()
+// mientras la tarea principal esta bloqueada en audio/red, asi el "pensando"
+// con puntos nunca se congela. Parar antes de reproducir el audio.
+void oledAnimStart();
+void oledAnimStop();
+
 // Nivel 0..10 de la voz que se esta decodificando (audio_play.cpp lo calcula
 // en ConsumeSample y lo inyecta aqui; barato, solo re-dibuja en oledTalkTick).
 void oledSetSpeechLevel(uint8_t level);

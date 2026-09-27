@@ -388,26 +388,29 @@ void handleIdle() {
 
 #if !SELF_TEST
 void runTurn() {
-    // 1) Grabar (push-to-talk)
+    // 1) Grabar (push-to-talk) + esperar respuesta: la cara "pensando" queda
+    //    ANIMADA (timer de fondo) mientras estas dos fases bloquean la tarea.
     uint8_t* wav = nullptr;
+    oledShowProcessing(true);
+    oledAnimStart();
     size_t wavLen = audioRecordWav(&wav, shouldStopRecording);
 
     if (wavLen == 0 || wav == nullptr) {
         Serial.println("[fsm] Sin audio util");
+        oledAnimStop();
         oledShowFace(IviFace::NEUTRAL);
         return;
     }
 
     if (!wifiConnected()) {
         Serial.println("[fsm] Sin WiFi");
+        oledAnimStop();
         oledShowFace(IviFace::NEUTRAL);
         return;
     }
 
-    // 2) Procesar (enviar y recibir respuesta)
-    oledShowProcessing(true);
-    Serial.printf("[fsm] Enviando %u bytes...\n", (unsigned)wavLen);
     IviReply reply;
+    Serial.printf("[fsm] Enviando %u bytes...\n", (unsigned)wavLen);
     int code = httpSendAudio(wav, wavLen, reply);
 
     // 2b) Reintento (1x) SOLO en fallos de transporte (server dormido en su
@@ -420,6 +423,8 @@ void runTurn() {
         code = httpSendAudio(wav, wavLen, reply);
     }
 
+    oledAnimStop();   // la animacion la toma oledTalkTick durante el playback
+
     if (code <= 0 || reply.audioLen == 0) {
         Serial.printf("[fsm] Error HTTP definitivo: %d\n", code);
         httpClientFree(reply);
@@ -430,7 +435,7 @@ void runTurn() {
     Serial.printf("[fsm] Respuesta: %u bytes, emocion=%s\n",
                   (unsigned)reply.audioLen, reply.emocion);
 
-    // 3) Reproducir con la cara unica (la boca sigue el audio en vivo)
+    // 2) Reproducir con la boca siguiendo el audio en vivo
     oledShowFace(IviFace::NEUTRAL);
     audioPlayBytes(reply.audio, reply.audioLen);
     httpClientFree(reply);
