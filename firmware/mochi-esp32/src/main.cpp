@@ -423,10 +423,11 @@ void runTurn() {
         code = httpSendAudio(wav, wavLen, reply);
     }
 
-    oledAnimStop();   // la animacion la toma oledTalkTick durante el playback
+    // El timer SIGUE corriendo: cubre el playback (boca via oledTalkTick).
 
     if (code <= 0 || reply.audioLen == 0) {
         Serial.printf("[fsm] Error HTTP definitivo: %d\n", code);
+        oledAnimStop();
         httpClientFree(reply);
         oledShowFace(IviFace::NEUTRAL);
         return;
@@ -435,11 +436,12 @@ void runTurn() {
     Serial.printf("[fsm] Respuesta: %u bytes, emocion=%s\n",
                   (unsigned)reply.audioLen, reply.emocion);
 
-    // 2) Reproducir con la boca siguiendo el audio en vivo
+    // 2) Reproducir con la boca siguiendo el audio en vivo (el timer anima)
     oledShowFace(IviFace::NEUTRAL);
     audioPlayBytes(reply.audio, reply.audioLen);
     httpClientFree(reply);
 
+    oledAnimStop();   // el reposo ya lo anima loop() -> oledLoop()
     oledShowFace(IviFace::NEUTRAL);
 }
 

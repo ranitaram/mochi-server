@@ -296,11 +296,11 @@ void audioPlayBytes(const uint8_t* data, size_t len) {
         Serial.println("[audio] MP3 begin FAIL.");
         return;
     }
-    // Mientras suena el MP3, mueve la boca y parpadea en el OLED. audioPlayBytes
-    // es bloqueante (loop() no corre), asi que la animacion se avanza aqui.
+    // Mientras suena el MP3, el OLED lo anima el timer de fondo (audioPlayBytes
+    // es bloqueante y NO debe dibujar: solo decodifica; oledTalkTick corre en
+    // el timer via el flag "talking", que este flag activa).
     oledShowTalking(true);
     uint32_t iterations = 0;
-    uint32_t twas = 0;
     uint32_t t0 = millis();
     while (mp3.isRunning() && mp3.loop()) {
         iterations++;
@@ -308,12 +308,6 @@ void audioPlayBytes(const uint8_t* data, size_t len) {
             Serial.printf("[audio] dec iter=%u t=%ums mem=%u/%u\n",
                           (unsigned)iterations, (unsigned)(millis() - t0),
                           (unsigned)mem.getPos(), (unsigned)mem.getSize());
-            yield();
-        }
-        unsigned long nowT = millis();
-        if (nowT - twas >= 120) {
-            twas = nowT;
-            oledTalkTick();
             yield();
         }
     }

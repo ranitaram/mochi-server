@@ -10,6 +10,8 @@
 #include "config.h"
 #include "battery.h"
 
+#define DEBUG_TALK 1   // log [talk] 1x/s mientras se anima el habla
+
 #define SCREEN_WIDTH  128
 #define SCREEN_HEIGHT 64
 #define OLED_ADDR     0x3C
@@ -433,6 +435,16 @@ void oledTalkTick() {
     lastTalkTick = now;
     talkPhase++;
 
+#if DEBUG_TALK
+    static uint32_t lastTalkLog = 0;
+    if (now - lastTalkLog >= 500) {
+        lastTalkLog = now;
+        Serial.printf("[talk] it=%u mouth=%u sway=%d env=%d\n",
+                      (unsigned)talkPhase, (unsigned)mouthOpen, swayX,
+                      (int)speechLevel);
+    }
+#endif
+
     // 1) boca: sigue el nivel de voz real, pero con un PISO de ritmo silabico
     //    para que nunca quede quieta mientras habla (aun en micro-silencios).
     uint8_t rhythm = (uint8_t)(1 + (animRng() & 3));        // 1..4
@@ -465,21 +477,21 @@ void oledSetSpeechLevel(uint8_t level) {
     speechLevel = level;
 }
 
-// Timer de animacion de fondo: mientras la tarea principal esta bloqueada
-// (grabando o esperando la respuesta del server), este timer avanza oledLoop()
-// para que los puntos del "pensando" no se congelen. Solo hay un escritor de
-// I2C a la vez (la main no toca el OLED mientras corre), asi que es seguro.
+// El timer maneja TODA la animacion de la fase de turno: pensando u ociosos
+// -> oledLoop(); hablando -> oledTalkTick(). Un solo escritor de I2C a la vez
+// (la tarea principal esta bloqueada en audio/red mientras corre).
 static TimerHandle_t animTimer = nullptr;
 
 static void animTimerCb(TimerHandle_t t) {
     (void)t;
-    oledLoop();
+    if (talking) oledTalkTick();
+    else         oledLoop();
 }
 
 void oledAnimStart() {
     if (!panelReady) return;
     if (animTimer == nullptr) {
-        animTimer = xTimerCreate("anim", pdMS_TO_TICKS(120), pdTRUE, (void*)0, animTimerCb);
+        animTimer = xTimerCreate("anim", pdMS_TO_TICKS(90), pdTRUE, (void*)0, animTimerCb);
     }
     if (animTimer && xTimerIsTimerActive(animTimer) != pdTRUE) {
         xTimerStart(animTimer, 0);
