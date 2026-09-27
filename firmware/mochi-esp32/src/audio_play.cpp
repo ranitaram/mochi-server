@@ -11,6 +11,26 @@
 #include "esp8266audio/AudioFileSource.h"
 #include "esp8266audio/AudioGeneratorMP3.h"
 
+// ------------------------------------------------------------------
+//  Envolvente del nivel de voz: la boca del OLED sigue el audio REAL que se
+//  decodifica. ConsumeSample() actualiza una envolvente aca (attack rapido /
+//  release lento) y la inyecta via oledSetSpeechLevel() solamente cuando
+//  cambia. Es barato (~44k llamadas/s, una suma y dos mul), no toca el I2S.
+// ------------------------------------------------------------------
+static float speechEnv = 0.0f;
+static uint8_t speechEnvLevel = 0;
+
+static void speechEnvUpdate(int16_t l, int16_t r) {
+    int32_t a = l; if (a < 0) a = -a;
+    int32_t b = r; if (b < 0) b = -b;
+    float m = (float)(a + b) * (10.0f / 65536.0f);   // 0..10 aprox
+    if (m > speechEnv) speechEnv += (m - speechEnv) * 0.35f;
+    else               speechEnv += (m - speechEnv) * 0.08f;
+    uint8_t lvl = (uint8_t)speechEnv;
+    if (lvl > 10) lvl = 10;
+    if (lvl != speechEnvLevel) { speechEnvLevel = lvl; oledSetSpeechLevel(lvl); }
+}
+
 // UN solo periferico I2S (I2S_NUM_0) y UN solo driver (i2s_std - nuevo).
 // RECONCILIACION: antes la bocina TX usaba el driver LEGACY (i2s_driver_install
 // + AudioOutputI2S de ESP8266Audio), lo que abortaba al arrancar ("new i2s
@@ -122,6 +142,7 @@ class AudioOutputI2SStd : public AudioOutput {
     }
 
     bool ConsumeSample(int16_t sample[2]) override {
+        speechEnvUpdate(sample[0], sample[1]);
         return ConsumeFrame(sample);
     }
 

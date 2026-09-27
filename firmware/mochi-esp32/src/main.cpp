@@ -62,31 +62,17 @@ static bool shouldStopRecording() {
     return false;
 }
 
-static IviFace emotionToFace(const char* emocion) {
-    if (emocion == nullptr) return IviFace::NEUTRAL;
-    if (strncmp(emocion, "feliz", 5) == 0) return IviFace::HAPPY;
-    if (strncmp(emocion, "sorprendido", 11) == 0) return IviFace::SORPRENDIDO;
-    if (strncmp(emocion, "burlon", 6) == 0) return IviFace::BURLON;
-    if (strncmp(emocion, "pensativo", 9) == 0) return IviFace::PENSATIVO;
-    if (strncmp(emocion, "enojado", 7) == 0) return IviFace::ENOJADO;
-    return IviFace::NEUTRAL;
-}
-
 // ------------------------------------------------------------------
-//  Modo TEST_OLED: pantalla blanca/negra alterna + re-escaneo I2C,
-//  para determinar si el panel enciende (y de que controlador es).
-// ------------------------------------------------------------------
-//  Modo TEST_OLED: cicla las caras de Ivi + diagnostico I2C periodico.
-//  Confirma dibujo/orientacion de las caras en pantalla SSD1306.
+//  Modo TEST_OLED: cicla los estados de la cara unica (neutral -> pensando
+//  -> hablando con nivel de voz simulado) + diagnostico I2C periodico.
+//  Confirma dibujo/movimiento de la cara en pantalla SSD1306.
 // ------------------------------------------------------------------
 #if TEST_OLED
-static const IviFace testFaces[] = {
-    IviFace::NEUTRAL, IviFace::HAPPY, IviFace::SORPRENDIDO,
-    IviFace::BURLON,  IviFace::PENSATIVO, IviFace::ENOJADO
-};
-static unsigned char testFaceIdx = 0;
-static unsigned long testOledLast = 0;
+static unsigned long testModeStart = 0;
+static int testMode = 0;          // 0 neutral, 1 pensando, 2 hablando
+static unsigned long testTalkLast = 0;
 static unsigned long testScanLast = 0;
+static uint8_t testLvl = 0;
 
 static void oledDiagLog() {
     Wire.beginTransmission(0x3C);
@@ -101,29 +87,51 @@ static void oledDiagLog() {
 void setup() {
     Serial.begin(115200);
     delay(300);
-    Serial.println("[test-oled] Iniciando TEST_OLED (caras Ivi)...");
+    Serial.println("[test-oled] Iniciando TEST_OLED (cara unica + estados)...");
     Wire.begin(PIN_OLED_SDA, PIN_OLED_SCL);   // una sola vez
     delay(50);
     oledDiagLog();
     Serial.println("[test-oled] Inicializando display SSD1306 (0x3C)...");
     oledInit();
-    oledShowFace(testFaces[testFaceIdx]);
-    testOledLast = millis();
+    oledShowFace(IviFace::NEUTRAL);
+    testModeStart = millis();
     testScanLast = millis();
 }
 
 void loop() {
-    if (millis() - testOledLast >= 1500) {
-        testOledLast = millis();
-        testFaceIdx = (testFaceIdx + 1) % (sizeof(testFaces)/sizeof(testFaces[0]));
-        oledShowFace(testFaces[testFaceIdx]);
-        Serial.printf("[test-oled] Mostrando cara %d/%d\n",
-                      testFaceIdx + 1, (int)(sizeof(testFaces)/sizeof(testFaces[0])));
+    unsigned long d = millis() - testModeStart;
+    int want = (d < 3000) ? 0 : (d < 6000) ? 1 : 2;
+    if (want != testMode) {
+        testMode = want;
+        if (testMode == 0) {
+            oledShowTalking(false);
+            oledShowProcessing(false);
+            oledShowFace(IviFace::NEUTRAL);
+            Serial.println("[test-oled] ESTADO: neutral (reposo)");
+        } else if (testMode == 1) {
+            oledShowProcessing(true);
+            Serial.println("[test-oled] ESTADO: pensando");
+        } else {
+            oledShowFace(IviFace::NEUTRAL);
+            oledShowTalking(true);
+            testLvl = 0;
+            Serial.println("[test-oled] ESTADO: hablando");
+        }
+    }
+    if (testMode == 2 && millis() - testTalkLast >= 105) {
+        testTalkLast = millis();
+        // simula una onda de voz real (con silencios) para que la boca baile
+        uint32_t t = millis() >> 8;
+        testLvl = (uint8_t)((t % 7) * 2);
+        if (testLvl > 10) testLvl = 10;
+        oledSetSpeechLevel(testLvl);
+        oledTalkTick();
     }
     if (millis() - testScanLast >= 6000) {
         testScanLast = millis();
         oledDiagLog();
     }
+    if (d >= 9000) testModeStart = millis();
     delay(20);
 }
 #endif
@@ -223,7 +231,7 @@ void loop() {
             if (hadCenterWait) {
                 hadCenterWait = false;   // paso por el centro y ahora desviado -> dispara
                 Serial.println("[test-all] -> GRABANDO");
-                oledShowFace(IviFace::PENSATIVO);
+                oledShowProcessing(true);
                 joyCenteredSince = 0;
                 state = State::WORKING;
             }
@@ -249,7 +257,7 @@ void loop() {
             Serial.printf("[test-all] Grabo %u bytes pcm=%u peak=%ld %%mid=%.1f flips=%u\n",
                           (unsigned)wavLen, (unsigned)n, peak,
                           n ? 100.0 * nMid / n : 0.0, nFlip);
-            oledShowFace(IviFace::HAPPY);
+            oledShowFace(IviFace::NEUTRAL);
             audioPlayWavLoopback(wav, wavLen);
         } else {
             Serial.println("[test-all] Sin audio util.");
@@ -372,7 +380,7 @@ void handleIdle() {
     oledLoop();
     if (joyAnyAxisOut()) {
         Serial.println("[fsm] -> GRABANDO");
-        oledShowFace(IviFace::PENSATIVO);
+        oledShowProcessing(true);
         joyCenteredSince = 0;
         state = State::WORKING;
     }
@@ -422,8 +430,8 @@ void runTurn() {
     Serial.printf("[fsm] Respuesta: %u bytes, emocion=%s\n",
                   (unsigned)reply.audioLen, reply.emocion);
 
-    // 3) Reproducir con la cara segun emocion
-    oledShowFace(emotionToFace(reply.emocion));
+    // 3) Reproducir con la cara unica (la boca sigue el audio en vivo)
+    oledShowFace(IviFace::NEUTRAL);
     audioPlayBytes(reply.audio, reply.audioLen);
     httpClientFree(reply);
 
@@ -460,7 +468,7 @@ void setup() {
     Serial.begin(115200);
     delay(100);
     oledInit();
-    oledShowFace(IviFace::HAPPY);
+    oledShowFace(IviFace::NEUTRAL);
     oledShowText("BAT-OK", "LiPo + TP4056");
     Serial.println("[batt] TEST_BATTERY: OLED + bocina alimentados por bateria.");
     lastBeep = millis();

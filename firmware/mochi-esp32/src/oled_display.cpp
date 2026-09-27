@@ -2,15 +2,23 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <string.h>
+#include <math.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "config.h"
-#include "faces.h"
 #include "battery.h"
 
 #define SCREEN_WIDTH  128
 #define SCREEN_HEIGHT 64
 #define OLED_ADDR     0x3C
+
+// Cara unica (ojos + boca) procedura: se dibuja entera cada frame.
+#define EYE_LX 49
+#define EYE_RX 79
+#define EYE_Y  24
+#define EYE_R  6
+#define MOUTH_X 64
+#define MOUTH_Y 44
 
 static Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
@@ -27,13 +35,37 @@ static bool textVisible = true;
 
 static bool wireReady = false;
 static bool panelReady = false;
+
+// --- animacion de habla ---
 static bool talking = false;
-static uint8_t mouthLevel = 0;
+static uint8_t speechLevel = 0;     // 0..10 inyectado por el decoder
+static float mouthF = 0;            // apertura suavizada (0..10)
+static uint8_t mouthOpen = 0;
 static unsigned long lastTalkTick = 0;
 static uint16_t talkPhase = 0;
+
+// --- balanceo lateral del grupo ojos+boca ---
+static double swayPhase = 0.0;
+static int swayX = 0;
+
+// --- mirada (desplazamiento de la pupila dentro del ojo) ---
+static float gazeX = 0, gazeY = 0;
+static int gazeTargetX = 0, gazeTargetY = 0;
+static unsigned long nextGaze = 0;
+static int lastPx = 0, lastPy = 0;
+
 static unsigned long lastBattPoll = 0;
 static bool bootMode = false;
 static int bootCountdown = -1;   // >=0: modo "esperando al server" con numero
+
+// xorshift barata para parpadeo/mirada (sin bloquear milis).
+static uint32_t animRng() {
+    static uint32_t x = 0xA3E1A7C5;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    return x;
+}
+
+static int rnd(float v) { return v >= 0 ? (int)(v + 0.5f) : (int)(v - 0.5f); }
 
 void oledInit() {
     if (!wireReady) {
@@ -53,7 +85,7 @@ void oledInit() {
         return;
     }
     panelReady = true;
-    // Animaciones continuas (boca/parpadeo) re-dibujan el frame a ~9fps;
+    // Animaciones continuas re-dibujan el frame a ~10fps;
     // subir I2C a 400kHz baja cada display() de ~90ms a ~25ms.
     Wire.setClock(400000);
     // Algunos clones vienen con contraste 0 o estado heredado; forzamos
@@ -66,99 +98,81 @@ void oledInit() {
     delay(20);
     display.clearDisplay();
     display.display();
+    nextGaze = millis() + 1500;
+    lastPx = lastPy = 0;
 }
 
-static void putBitmap(const unsigned char* bmp, int offsetX = 0, int offsetY = 0) {
-    // caras 64x48 centradas; el contenido real (ojos/boca) empieza ~5px
-    // dentro del bitmap, asi que restamos 5 para subir la cara y centrarla.
-    int x = (SCREEN_WIDTH - 64) / 2 + offsetX;
-    int y = (SCREEN_HEIGHT - 48) / 2 - 5 + offsetY;
-    display.drawBitmap(x, y, bmp, 64, 48, SSD1306_WHITE);
+// Elige un nuevo objetivo de pupila dentro del ojo (±2 px, siempre dentro del
+// circulo blanco de radio EYE_R) y programa cuándo volver a moverse.
+static void gazeRetarget() {
+    uint32_t r = animRng();
+    int vx = (int)(r & 15) - 7;                  // -7..8
+    int vy = (int)(((r >> 4) & 15)) - 7;
+    gazeTargetX = vx < -2 ? -2 : (vx > 2 ? 2 : vx);
+    gazeTargetY = vy < -2 ? -2 : (vy > 2 ? 2 : vy);
+    nextGaze = millis() + 900 + (unsigned)((r >> 8) & 1023);   // 0.9..1.9s
 }
 
-// Regiones de la boca en coordenadas de pantalla (cara centrada: x=32..95, y=3..50).
-// HAPPY tiene la sonrisa ancha (bw=41), SORPRENDIDO la "o" vertical, PENSATIVO
-// solo puntos: la caja sirve para borrar la boca estatica y re-dibujarla animada.
-struct MouthBox { int x, y, w, h; };
-
-static const MouthBox& currentMouthBox() {
-    static const MouthBox mNeutral     = {54, 40, 21, 4};
-    static const MouthBox mHappy       = {44, 41, 41, 8};
-    static const MouthBox mSurprised   = {59, 37, 12, 12};
-    static const MouthBox mBurla       = {52, 35, 31, 7};
-    static const MouthBox mThink       = {56, 41, 17, 3};
-    static const MouthBox mAngry       = {56, 41, 17, 4};
-    switch (currentFace) {
-        case IviFace::HAPPY:       return mHappy;
-        case IviFace::SORPRENDIDO: return mSurprised;
-        case IviFace::BURLON:      return mBurla;
-        case IviFace::PENSATIVO:   return mThink;
-        case IviFace::ENOJADO:     return mAngry;
-        case IviFace::NEUTRAL:
-        default:                   return mNeutral;  // incluye PROCESSING
+// Acerca la pupila al objetivo; al amarrarse, espera nextGaze y re-elige.
+static void gazeStep() {
+    gazeX += ((float)gazeTargetX - gazeX) * 0.35f;
+    gazeY += ((float)gazeTargetY - gazeY) * 0.35f;
+    if (fabsf((float)gazeTargetX - gazeX) < 0.15f &&
+        fabsf((float)gazeTargetY - gazeY) < 0.15f &&
+        (long)(millis() - nextGaze) >= 0) {
+        gazeRetarget();
     }
 }
 
-static void drawTalkingMouth() {
-    if (!talking) return;
-    const MouthBox& m = currentMouthBox();
-    int cx = m.x + m.w / 2;
-    int bot = m.y + m.h;
-    display.fillRect(m.x, m.y, m.w, m.h, SSD1306_BLACK);
-    switch (mouthLevel) {
-        case 0: display.fillRect(cx - 3,  bot - 1, 7,  1, SSD1306_WHITE); break;
-        case 1: display.fillRect(cx - 5,  bot - 2, 11, 2, SSD1306_WHITE); break;
-        case 2: display.fillRoundRect(cx - 7,  bot - 3, 15, 3, 2, SSD1306_WHITE); break;
-        case 3: display.fillRoundRect(cx - 9,  bot - 5, 19, 5, 3, SSD1306_WHITE); break;
-        default: display.fillRoundRect(cx - 10, bot - 7, 21, 7, 4, SSD1306_WHITE); break;
-    }
-}
+// Ojos grandes: circulos blancos con pupila negra que sigue la mirada; al
+// parpadear se tapan con una linea gruesa. En "pensando" miran arriba.
+static void drawFaceFeatures(int ox) {
+    bool think = (currentFace == IviFace::PROCESSING);
+    int Lx = EYE_LX + ox;
+    int Rx = EYE_RX + ox;
+    int ey = EYE_Y + (talking ? (int)(talkPhase & 1) : 0);
 
-static void drawEyes() {
-    // borra los ojos grandes del bitmap y los re-dibuja mas chicos
-    display.fillRect(40, 16, 18, 16, SSD1306_BLACK);
-    display.fillRect(70, 16, 18, 16, SSD1306_BLACK);
-    if (blinkState) {
-        display.drawLine(44, 26, 54, 26, SSD1306_WHITE);
-        display.drawLine(74, 26, 84, 26, SSD1306_WHITE);
+    display.fillCircle(Lx, ey, EYE_R, SSD1306_WHITE);
+    display.fillCircle(Rx, ey, EYE_R, SSD1306_WHITE);
+
+    if (blinkState && !think) {
+        display.fillRect(Lx - EYE_R, ey - 1, EYE_R * 2, 2, SSD1306_WHITE);
+        display.fillRect(Rx - EYE_R, ey - 1, EYE_R * 2, 2, SSD1306_WHITE);
     } else {
-        display.fillCircle(49, 24, 2, SSD1306_WHITE);
-        display.fillCircle(79, 24, 2, SSD1306_WHITE);
-        display.drawPixel(47, 22, SSD1306_WHITE);
-        display.drawPixel(77, 22, SSD1306_WHITE);
+        int px = rnd(gazeX);
+        int py = think ? -3 : rnd(gazeY);
+        if (py < -3) py = -3; else if (py > 3) py = 3;
+        display.fillCircle(Lx + px, ey + py, 3, SSD1306_BLACK);
+        display.fillCircle(Rx + px, ey + py, 3, SSD1306_BLACK);
+        display.drawPixel(Lx + px - 1, ey + py - 1, SSD1306_WHITE);
+        display.drawPixel(Rx + px - 1, ey + py - 1, SSD1306_WHITE);
     }
 }
 
-static void drawEyebrows() {
-    int y = 17;
-    if (talking) y += (talkPhase & 1);
-    int x1L = 41, x2L = 57, y0L = y, y1L = y;
-    int x1R = 71, x2R = 87, y0R = y, y1R = y;
-    switch (currentFace) {
-        case IviFace::HAPPY:       y0L -= 2; y1L -= 2; y0R -= 2; y1R -= 2; break;
-        case IviFace::SORPRENDIDO: y0L -= 4; y1L -= 4; y0R -= 4; y1R -= 4; break;
-        case IviFace::BURLON:      y0L -= 3; y1L -= 2; break;
-        case IviFace::PENSATIVO:   y0R -= 2; y1R -= 2; break;
-        case IviFace::ENOJADO:     y1L += 2; y0R += 2; break;
-        default: break;
-    }
-    display.drawLine(x1L, y0L, x2L, y1L, SSD1306_WHITE);
-    display.drawLine(x1R, y0R, x2R, y1R, SSD1306_WHITE);
-}
+// Boca: en reposo una sonrisa suave; hablando, se abre siguiendo el audio y
+// baja/crece con la ponderación `mouthOpen` (0..10). No existe en "pensando".
+static void drawMouth(int ox) {
+    if (currentFace == IviFace::PROCESSING) return;
 
-static void drawEars() {
-    // orejas a los lados (aprovechando los margenes de pantalla)
-    int wig = talking ? (int)(talkPhase & 1) : (int)((millis() / 650) & 1);
-    int y = 27 + (wig ? 2 : 0);
-    display.fillCircle(36, y, 6, SSD1306_WHITE);
-    display.fillCircle(90, y, 6, SSD1306_WHITE);
-    display.drawPixel(35, y - 1, SSD1306_BLACK);
-    display.drawPixel(89, y - 1, SSD1306_BLACK);
+    int mx = MOUTH_X + ox;
+    int my = MOUTH_Y + (talking ? (int)(talkPhase & 1) : 0);
+    int op = talking ? (int)mouthOpen : 0;
+
+    if (op <= 1) {
+        display.drawLine(mx - 5, my, mx - 3, my - 1, SSD1306_WHITE);
+        display.drawLine(mx - 3, my - 1, mx + 3, my - 1, SSD1306_WHITE);
+        display.drawLine(mx + 3, my - 1, mx + 5, my, SSD1306_WHITE);
+        return;
+    }
+
+    int w = 8 + op * 2;          // 12..28
+    int h = 2 + op;              // 4..12
+    display.fillRoundRect(mx - w / 2, my - 2, w, h, 2, SSD1306_WHITE);
 }
 
 static void drawBatteryIcon() {
-    // esquina superior derecha; fuera de la zona de la cara (x<=95) y de las
-    // orejas (x<=96). Persiste en todas las animaciones (~10fps).
+    // esquina superior derecha; fuera de la zona de la cara (x<=95). El
+    // balanceo lateral maximo deja los ojos en x<=84, no pisa este icono.
     int bx = 92, by = 2, bw = 17, bh = 8;
     if (!batteryPresent()) {
         // sin modulo: contorno + texto "USB" (alimentando por cable, sin sensor)
@@ -190,10 +204,8 @@ static void drawBatteryIcon() {
         int x = bx + 1 + (i * (bw - 2)) / segs;
         display.fillRect(x, by + 1, 1, bh - 2, SSD1306_WHITE);
     }
-    // ultima barra (borde derecho) puede quedar a 1px del margen; normal.
 
     if (batteryCharging()) {
-        // rayo de carga sobre la bateria
         display.fillTriangle(bx + 4, by + 1, bx + 9, by + 1, bx + 6, by + 3, SSD1306_BLACK);
         display.fillTriangle(bx + 4, by + bh - 2, bx + 9, by + bh - 2, bx + 6, by + bh - 4, SSD1306_BLACK);
         display.drawLine(bx + 5, by + 3, bx + 7, by + 5, SSD1306_WHITE);
@@ -204,8 +216,6 @@ static void drawFace() {
     display.clearDisplay();
 
     if (bootMode) {
-        // Modo countdown: la Ivi despierta al servidor (Render duerme a los
-        // 15 min) y muestra los segundos que faltan en grande, con textos.
         if (bootCountdown >= 0) {
             char s[4];
             snprintf(s, sizeof(s), "%d", bootCountdown < 0 ? 0 : bootCountdown);
@@ -223,9 +233,8 @@ static void drawFace() {
             return;
         }
 
-        // Pantalla de "despertando de la siesta": ojos cerrados (asustados de
-        // dormir), animacion zZz auto-timed por millis() y dos lineas de texto
-        // al centro. Reemplaza la cara normal durante el boot del WiFi.
+        // Pantalla de "despertando de la siesta": ojos cerrados + zZz animado
+        // auto-timed por millis() y dos lineas de texto al centro.
         display.drawLine(44, 26, 54, 26, SSD1306_WHITE);   // ojito izquierdo
         display.drawLine(74, 26, 84, 26, SSD1306_WHITE);   // ojito derecho
 
@@ -251,22 +260,9 @@ static void drawFace() {
         return;
     }
 
-    switch (currentFace) {
-        case IviFace::HAPPY:       putBitmap(&faceHappy[0][0]); break;
-        case IviFace::SORPRENDIDO: putBitmap(&faceSurprised[0][0]); break;
-        case IviFace::BURLON:      putBitmap(&faceBurla[0][0]); break;
-        case IviFace::PENSATIVO:   putBitmap(&faceThink[0][0]); break;
-        case IviFace::ENOJADO:     putBitmap(&faceAngry[0][0]); break;
-        case IviFace::NEUTRAL:
-        default:
-            putBitmap(&faceNeutral[0][0]);
-            break;
-    }
-
-    drawEyes();
-    drawEyebrows();
-    drawTalkingMouth();
-    drawEars();
+    int ox = talking ? swayX : 0;
+    drawFaceFeatures(ox);
+    drawMouth(ox);
 
     if (processing) {
         // puntos animados abajo a la derecha
@@ -288,15 +284,19 @@ static void drawFace() {
 
 void oledShowFace(IviFace face) {
     bootMode = false;
+    bootCountdown = -1;
     currentFace = face;
-    processing = false;
+    if (face != IviFace::PROCESSING) processing = false;
     showTextBox = false;
+    if (!talking) { swayX = 0; swayPhase = 0; }
     drawFace();
 }
 
 void oledShowProcessing(bool on) {
     bootMode = false;
+    bootCountdown = -1;
     processing = on;
+    if (on) { talking = false; blinkState = false; swayX = 0; }
     showTextBox = false;
     drawFace();
 }
@@ -315,9 +315,6 @@ void oledShowText(const char* line1, const char* line2) {
     display.display();
 }
 
-// Pantalla de boot "despertando de la siesta": ojos cerrados + zZz animado
-// + textos. Se usa durante el arranque (espera de WiFi). Al terminar, pasar
-// a oledShowFace() (o oledShowText()) sale del modo boot.
 void oledShowBoot(const char* line1, const char* line2) {
     bootMode = true;
     bootCountdown = -1;   // vuelve al modo zZz (no countdown)
@@ -330,9 +327,6 @@ void oledShowBoot(const char* line1, const char* line2) {
     drawFace();
 }
 
-// Cuenta regresiva del despertado del server: numero grande + textos (los
-// mismos que haya seteado oledShowBoot()). Solo repinta cuando cambia el
-// valor, para que el OLED no flaquee en cada poll.
 void oledShowCountdown(int segsLeft) {
     if (!panelReady) return;
     bootMode = true;
@@ -341,24 +335,21 @@ void oledShowCountdown(int segsLeft) {
     drawFace();
 }
 
-// Repinta el frame de boot (la animacion zZz es auto-timed por millis()).
 void oledBootTick() {
     if (!panelReady || !bootMode) return;
     drawFace();
 }
 
-// Envia un comando individual del controlador por I2C (para test directo
-// del panel sin depender del buffer/GFX). Commando = byte con Co=0, D/C#=0.
 static void oledSendCmd(uint8_t cmd) {
     Wire.beginTransmission(OLED_ADDR);
-    Wire.write(0x00);   // control byte: siguiente byte = comando
+    Wire.write(0x00);
     Wire.write(cmd);
     Wire.endTransmission();
 }
 
 static void oledSendCmd2(uint8_t cmd, uint8_t arg) {
     Wire.beginTransmission(OLED_ADDR);
-    Wire.write(0x00);   // comando
+    Wire.write(0x00);
     Wire.write(cmd);
     Wire.write(arg);
     Wire.endTransmission();
@@ -366,17 +357,14 @@ static void oledSendCmd2(uint8_t cmd, uint8_t arg) {
 
 void oledTestScreen(bool on) {
     if (on) {
-        // Habilitar charge-pump interno del SSD1306 (`0x8D 0x14`) y encender
-        // el panel (`0xAF`). Sin el charge-pump, el panel no recibe voltaje
-        // y queda oscuro aunque el controlador responda por I2C.
-        oledSendCmd2(0x8D, 0x14);   // Enable charge pump (SSD1306)
-        oledSendCmd(0xAF);          // Display ON (ignora contenido RAM)
+        oledSendCmd2(0x8D, 0x14);
+        oledSendCmd(0xAF);
         delay(5);
         display.clearDisplay();
         display.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SSD1306_WHITE);
         display.display();
     } else {
-        oledSendCmd(0xAE);          // Display OFF
+        oledSendCmd(0xAE);
         display.clearDisplay();
         display.display();
     }
@@ -387,56 +375,72 @@ void oledLoop() {
     if (now - lastBattPoll >= BATTERY_POLL_MS) {
         lastBattPoll = now;
         batteryPoll();
-        drawFace();   // refresca el icono con el nuevo nivel
+        drawFace();
     }
-    if (currentFace != IviFace::PROCESSING) {
-        // parpadeo natural de cualquier cara: intervalo variable 2.0..3.4s
-        unsigned long interval = 2000 + ((now >> 6) % 5) * 320;
-        if (!blinkState && now - lastBlink > interval) {
-            lastBlink = now;
-            blinkState = true;
-            drawFace();
-        } else if (blinkState && now - lastBlink > 150) {
-            blinkState = false;
-            drawFace();
-        }
-    }
-    if (processing) {
+
+    if (currentFace == IviFace::PROCESSING) {
+        // pensando: solo los puntos; los ojos quedan mirando arriba.
         if (now - lastDot > 350) {
             lastDot = now;
             dotFrame = (dotFrame + 1) % 4;
             drawFace();
         }
+        return;
     }
-    if (showTextBox && now - lastBlink > 4000) {
-        // simple: nada, texto permanente es mas util
+
+    if (talking) return;   // la animacion de habla la avanza audioPlayBytes
+
+    // parpadeo natural de la cara unica: intervalo variable 2.0..3.7s
+    uint32_t interval = 2000 + animRng() % 1700;
+    if (!blinkState && now - lastBlink > interval) {
+        blinkState = true;
+        lastBlink = now;
+        drawFace();
+    } else if (blinkState && now - lastBlink > 150) {
+        blinkState = false;
+        drawFace();
+    }
+
+    // mirada que pasea en reposo: solo repinta si la pupila se movio >=1px
+    gazeStep();
+    int px = rnd(gazeX), py = rnd(gazeY);
+    if (px != lastPx || py != lastPy) {
+        lastPx = px; lastPy = py;
+        drawFace();
     }
 }
 
-// Inicia/suspende la animacion de "hablando". Se activa desde audioPlayBytes
-// alrededor de la reproduccion del MP3 para mover la boca de la cara actual.
 void oledShowTalking(bool on) {
     if (!panelReady) { talking = false; return; }
     talking = on;
-    mouthLevel = 0;
+    mouthF = 0; mouthOpen = 0;
+    swayPhase = 0; swayX = 0;
+    if (on) gazeRetarget();
     drawFace();
 }
 
-// Llamado ~cada 120ms durante la reproduccion de audio. Mueve la boca con un
-// patron pseudoaleatorio tipo habla y parpadea de forma natural.
 void oledTalkTick() {
     if (!panelReady || !talking) return;
     unsigned long now = millis();
-    if (now - lastTalkTick < 100) return;
+    if (now - lastTalkTick < 95) return;
     lastTalkTick = now;
-
-    static uint32_t rng = 0xA341316C;
-    rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
-    uint32_t m = rng & 31;
-    mouthLevel = (m < 10) ? 0 : (m < 19) ? 1 : (m < 26) ? 2 : (m < 30) ? 3 : 4;
     talkPhase++;
 
-    if (!blinkState && now - lastBlink > (2200 + (rng % 1600))) {
+    // 1) boca: sigue el nivel de voz real (attack 0.55)
+    mouthF += ((float)speechLevel - mouthF) * 0.55f;
+    mouthOpen = (uint8_t)(mouthF + 0.5f);
+    if (mouthOpen > 10) mouthOpen = 10;
+
+    // 2) balanceo lateral: mas voz = mas amplitud (1..5 px)
+    swayPhase += 0.55;
+    double amp = 1.0 + speechLevel * 0.4;
+    swayX = (int)(sin(swayPhase) * amp);
+
+    // 3) pupilas que se pasean mientras habla
+    gazeStep();
+
+    // 4) parpadeo natural
+    if (!blinkState && now - lastBlink > (1400 + animRng() % 1600)) {
         blinkState = true;
         lastBlink = now;
     } else if (blinkState && now - lastBlink > 130) {
@@ -444,4 +448,9 @@ void oledTalkTick() {
     }
 
     drawFace();
+}
+
+void oledSetSpeechLevel(uint8_t level) {
+    if (level > 10) level = 10;
+    speechLevel = level;
 }
