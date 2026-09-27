@@ -17,7 +17,7 @@
 //  0.15) y lo inyecta via oledSetSpeechLevel() (0..10) solo cuando cambia.
 //  Es barato (~44k llamadas/s), no toca el I2S.
 // ------------------------------------------------------------------
-#define DEBUG_TALK 1   // log [talk] 1x/s mientras se decodifica (calibracion)
+#define DEBUG_TALK 0   // log [talk] 1x/s mientras se decodifica (calibracion)
 static float speechPeak = 0.0f;
 static uint8_t speechEnvLevel = 0;
 

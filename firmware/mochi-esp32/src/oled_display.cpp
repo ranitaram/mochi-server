@@ -10,7 +10,7 @@
 #include "config.h"
 #include "battery.h"
 
-#define DEBUG_TALK 1   // log [talk] 1x/s mientras se anima el habla
+#define DEBUG_TALK 0   // log [talk] 1x/s mientras se anima el habla
 
 #define SCREEN_WIDTH  128
 #define SCREEN_HEIGHT 64
