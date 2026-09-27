@@ -106,7 +106,9 @@ int httpFetchNetworks(WifiEntry* out, int maxOut) {
 
 int httpSendAudio(const uint8_t* wav, size_t wavLen, IviReply& reply) {
     HTTPClient http;
-    http.setTimeout(60000);   // la respuesta tarda (STT + LLM + TTS)
+    // La respuesta tarda (STT + LLM + TTS) y con reintentos server-side puede
+    // superar los 60s clásicos. setTimeout es uint16_t: 65000 es el máximo.
+    http.setTimeout(65000);
     String url = baseUrl() + SERVER_PATH;
 
     httpBegin(http, url);

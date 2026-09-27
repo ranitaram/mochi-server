@@ -7,14 +7,15 @@
 
 import "dotenv/config";
 import path from "path";
+import fs from "fs";
 import express from "express";
 import { transcribirAudio } from "./stt";
-import { generarRespuesta, extraerHechos } from "./llm";
-import { generarAudioMP3 } from "./tts";
+import { generarRespuesta, extraerHechos, sugiereExtraerHechos } from "./llm";
+import { generarAudioMP3, setFallbackAudio, setFallbackNoAudio, obtenerFallbackNoAudio } from "./tts";
 import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
 import { deviceRouter } from "./deviceRoutes";
 import { loginAdmin, logoutAdmin, diagnosticoAuth } from "./auth";
-import { obtenerSesion, agregarMensaje } from "./session";
+import { obtenerSesion, agregarMensaje, quitarUltimoMensajeUsuario } from "./session";
 
 const app = express();
 // Confiar en el X-Forwarded-For de los proxies (Render) para que req.ip sea la
@@ -45,6 +46,25 @@ app.use(deviceRouter);
 
 // --- Memoria persistente ---
 let contextoHechos = "";
+
+// MP3 de emergencia: se cargan UNA vez al arrancar para que Ivi SIEMPRE tenga
+// audio que reproducir (TTS caído o transcripción vacía -> frase cachada, no
+// silencio). No dependen de ningún servicio externo en runtime.
+function cargarFallbacksMp3() {
+  const assets = path.join(__dirname, "assets");
+  for (const [nombre, setter] of [
+    ["fallback_audio", setFallbackAudio],
+    ["fallback_noaudio", setFallbackNoAudio],
+  ] as const) {
+    try {
+      setter(fs.readFileSync(path.join(assets, `${nombre}.mp3`)));
+      console.log(`[assets] MP3 de emergencia cargado: ${nombre}.mp3`);
+    } catch (err: any) {
+      console.error(`[assets] No se pudo cargar ${nombre}.mp3:`, err.message);
+    }
+  }
+}
+cargarFallbacksMp3();
 
 async function initMemory() {
   try {
@@ -144,8 +164,20 @@ app.post("/api/touch", async (req, res) => {
   // 1. Transcribir audio → texto
   const textoUsuario = await transcribirAudio(audioBuffer);
   if (!textoUsuario) {
-    console.log("[touch] No se pudo transcribir el audio");
-    res.status(422).json({ error: "No se pudo transcribir el audio" });
+    // En vez de 422 (silencio en el ESP32), responder con el MP3 de emergencia:
+    // Ivi pide que repitan, audible, en lugar de quedarse muda.
+    console.log("[touch] STT vacío/fallido → MP3 de emergencia (audible)");
+    const fallbackStt = obtenerFallbackNoAudio();
+    if (fallbackStt) {
+      res.set({
+        "Content-Type": "audio/mpeg",
+        "X-Ivi-Texto": "No te escuché bien, repetí lo que me dijiste, porfa.",
+        "X-Ivi-Emocion": "neutral",
+      });
+      res.send(fallbackStt);
+    } else {
+      res.status(422).json({ error: "No se pudo transcribir el audio" });
+    }
     return;
   }
   console.log(`[touch] Transcripción: "${textoUsuario}" (${Date.now() - inicio}ms)`);
@@ -182,19 +214,29 @@ app.post("/api/touch", async (req, res) => {
     agregarMensaje(sesion, { role: "assistant", content: respuesta.texto });
   } catch (err: any) {
     console.error("[touch] Error generando audio:", err.message);
+    // Ivi no pudo responder: quitar la pregunta del historial para que no
+    // quede como "contexto fantasma" que contamine la próxima pregunta.
+    quitarUltimoMensajeUsuario(sesion);
     res.status(500).json({ error: "Error generando audio" });
     return;
   }
 
-  // 5. Extraer hechos en background (fire-and-forget) de la conversación actual
-  extraerHechos(sesion.historial)
-    .then((nuevos) => {
-      if (nuevos.length > 0) {
-        console.log(`  [memoria] +${nuevos.length} hecho(s) guardado(s)`);
-      }
-      return Promise.all(nuevos.map(guardarHecho));
-    })
-    .catch((err) => console.error("Error guardando hechos:", err.message));
+  // 5. Extraer hechos en background (fire-and-forget) SOLO cuando la frase del
+  //    usuario tiene pinta de contener datos personales. No corre en cada
+  //    turno: es una llamada menos a Groq (menos rate-limits para Whisper/LLM),
+  //    que son los que causan los silencios y el fallback "se me fue la señal".
+  if (sugiereExtraerHechos(textoUsuario)) {
+    extraerHechos(sesion.historial)
+      .then((nuevos) => {
+        if (nuevos.length > 0) {
+          console.log(`  [memoria] +${nuevos.length} hecho(s) guardado(s)`);
+        }
+        return Promise.all(nuevos.map(guardarHecho));
+      })
+      .catch((err) => console.error("Error guardando hechos:", err.message));
+  } else {
+    console.log("  [memoria] omito extracción (sin datos personales evidentes)");
+  }
 });
 
 // --- Iniciar servidor ---

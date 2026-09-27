@@ -9,10 +9,11 @@
 //   (B) REINTENTO CON BACKOFF: si Groq falla por un error TRANSITORIO
 //       (red cortada, reset de conexión, 429 de rate-limit, 5xx, DNS) se
 //       reintenta hasta RETRIES veces con espera creciente
-//       (BACKOFF_BASE_MS * (intento+1)). Solo se considera "fallo" tras
-//       agotar los reintentos O si el error es permanente (400/401/403).
-//       Nuestro propio timeout (AbortError) NO se reintenta: reintentarlo
-//       solo le daría 10s más a Groq para lo mismo.
+//       (BACKOFF_BASE_MS * (intento+1)). NUESTRO propio timeout (AbortError)
+//       también se reintenta un par de veces (RETRIES_TIMEOUT): preguntas
+//       difíciles a veces solo necesitan un intento más lento. Solo se
+//       considera "fallo" tras agotar los reintentos O si el error es
+//       permanente (400/401/403).
 //   (D) PRESERVAR EL HILO DE CONVERSACIÓN: cuando usamos fallback, Ivi
 //       dice "se me fue la señal" en UNA de las frases del pool — el server
 //       ya agrega esa respuesta al historial (historial.push), así el hilo
@@ -25,9 +26,11 @@ import { SYSTEM_PROMPT } from "./personality";
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const MODEL = process.env.GROQ_MODEL || "qwen/qwen3-27b";
 
-const TIMEOUT_MS = 10_000;      // timeout de CADA llamada a Groq
-const RETRIES = 3;               // reintentos para errores transitorios
-const BACKOFF_BASE_MS = 800;     // backoff base entre reintentos
+const TIMEOUT_MS = 15_000;      // timeout de CADA llamada a Groq (10s cortaba
+                                // preguntas difíciles que tardan en pensarse)
+const RETRIES = 3;              // reintentos para errores transitorios
+const RETRIES_TIMEOUT = 1;      // reintentos extra cuando es NUESTRO timeout
+const BACKOFF_BASE_MS = 800;    // backoff base entre reintentos
 
 // (A) Pool rotativo: emociones variadas, se rotan con fallbackIdx.
 const FRASES_EMERGENCIA = [
@@ -74,6 +77,37 @@ function esTransitorio(err: any): boolean {
 }
 
 const dormir = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Heurística ligera para el gating de extracción de hechos: ¿la frase del
+ * usuario tiene pinta de contener datos personales suyos (familia, gustos,
+ * trabajo, mascotas...)? Si no, el server se ahorra la llamada a Groq de
+ * extracción (menos rate-limits acumulados para Whisper y el LLM principal,
+ * que son los que generan los silencios y el fallback "se me fue la señal").
+ */
+export function sugiereExtraerHechos(texto: string): boolean {
+  // Normalizar a mayúsculas→minúsculas SIN tildes: \w/\b en JS no reconocen
+  // é á í ó ú como letras, así que un \b tras "compré" o "mamá" no cuadra.
+  const t =
+    " " +
+    texto
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[.,;:!?¡¿()]/g, " ") +
+    " ";
+  const patrones = [
+    /\bme (llamo|dicen|compre|regalaron|regalo|dio)\b/, /\bte cuento\b/, /\bmi\b/, /\b mis\b/,
+    /\b(trabajo|trabaje|trabaja)\b/, /\bestudio\b/, /\b(vivo|vivimos)\b/,
+    /\b(novia|novio|esposa|esposo|marido|mujer|pareja)\b/,
+    /\b(hija|hijo|hijos|abuel[oa]|abuelos)\b/, /\b(mama|papa|madre|padre|mami)\b/,
+    /\b(hermana|hermano|hermanos)\b/, /\b(tia|tio|tia|tio|primo|prima|primos)\b/,
+    /\bfamilia\b/, /\b(cumpleanos|cumples|cumpli)\b/, /\b(perro|gato|mascota|perrita|gatito)\b/,
+    /\b(amo|amo a|quiere)\b/, /\bme (encanta|gusta|molesta|preocupa|asusta)\b/,
+    /\b(tengo|tenia|tuve)\b/,
+  ];
+  return patrones.some((re) => re.test(t));
+}
 
 /**
  * Intenta extraer un JSON válido de un string que puede contener
@@ -180,12 +214,16 @@ export async function generarRespuesta(
         console.error("Error de Groq:", err.message ?? err);
       }
 
-      // Reintentar SOLO errores transitorios (no nuestro propio timeout).
-      // Espera creciente 800ms → 1600ms → 2400ms (backoff).
-      if (!abortado && esTransitorio(err) && intento < RETRIES) {
+      // Reintentar transitorios (429/5xx/red) hasta RETRIES veces Y nuestro
+      // propio timeout hasta RETRIES_TIMEOUT veces (un timeout de 15s puede
+      // ser una pregunta difícil que solo necesita otro intento más lento).
+      // En el agua de los reintentos, pasar al fallback rotativo.
+      const reintentarTimeout = abortado && intento < RETRIES_TIMEOUT;
+      const reintentarTransitorio = !abortado && esTransitorio(err) && intento < RETRIES;
+      if (reintentarTimeout || reintentarTransitorio) {
         const espera = BACKOFF_BASE_MS * (intento + 1);
         console.warn(
-          `Groq transitorio (${err.code ?? err.name}), reintento ${intento + 1}/${RETRIES} en ${espera}ms`
+          `${abortado ? "Groq timeout" : "Groq transitorio (" + (err.code ?? err.name) + ")"}, reintento ${intento + 1} en ${espera}ms`
         );
         await dormir(espera);
         continue;

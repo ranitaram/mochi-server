@@ -48,6 +48,20 @@ export function agregarMensaje(sesion: Session, msg: ConversationMessage): void 
   }
 }
 
+/**
+ * Quita el ÚLTIMO mensaje del usuario del historial. Se usa cuando Ivi no
+ * pudo producir audio (fallo total), para que la pregunta quede sin respuesta
+ * no cuelgue como "contexto fantasma" en la siguiente consulta.
+ */
+export function quitarUltimoMensajeUsuario(sesion: Session): void {
+  for (let i = sesion.historial.length - 1; i >= 0; i--) {
+    if (sesion.historial[i].role === "user") {
+      sesion.historial.splice(i, 1);
+      return;
+    }
+  }
+}
+
 /** Borra sesiones que pasaron IDLE_MS sin actividad. */
 export function limpiarSesiones(): void {
   const ahora = Date.now();

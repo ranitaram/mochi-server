@@ -400,10 +400,20 @@ void runTurn() {
     oledShowProcessing(true);
     Serial.printf("[fsm] Enviando %u bytes...\n", (unsigned)wavLen);
     IviReply reply;
-    bool ok = httpSendAudio(wav, wavLen, reply);
+    int code = httpSendAudio(wav, wavLen, reply);
 
-    if (!ok || reply.audioLen == 0) {
-        Serial.println("[fsm] Error HTTP");
+    // 2b) Reintento (1x) SOLO en fallos de transporte (server dormido en su
+    //     cold-start, red cortada) o en 200 sin body. No se reintentan errores
+    //     HTTP reales (4xx/5xx): el server ya reintenta internamente.
+    if (code <= 0 || (code == 200 && reply.audioLen == 0)) {
+        Serial.printf("[fsm] Intento 1: HTTP %d, audio %u — reintentando 1 vez\n",
+                      code, (unsigned)reply.audioLen);
+        httpClientFree(reply);
+        code = httpSendAudio(wav, wavLen, reply);
+    }
+
+    if (code <= 0 || reply.audioLen == 0) {
+        Serial.printf("[fsm] Error HTTP definitivo: %d\n", code);
         httpClientFree(reply);
         oledShowFace(IviFace::NEUTRAL);
         return;

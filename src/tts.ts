@@ -9,7 +9,28 @@ import path from "path";
 const VOZ = process.env.EDGE_TTS_VOICE || "es-MX-JorgeNeural";
 const PITCH = process.env.TTS_PITCH || "+20Hz";
 const RATE = process.env.TTS_RATE || "1.1";
-const TIMEOUT_MS = 10_000;
+// Respuestas largas (preguntas difíciles) tardan en sintetizarse: 10s era
+// demasiado justo y cortaba el audio -> silencio. 25s por intento.
+const TIMEOUT_MS = 25_000;
+const RETRIES = 2;
+const BACKOFF_BASE_MS = 800;
+const CARPETA_TEMP = "./audio-temp";
+
+// MP3 de EMERGENCIA (commiteados en src/assets, cargados en memoria al
+// arrancar). Reemplazan al silencio cuando Edge TTS o Groq Whisper fallan:
+// Ivi SIEMPRE responde algo en el parlante.
+let fallbackAudio: Buffer | null = null; //   TTS agotó reintentos
+let fallbackNoAudio: Buffer | null = null; // STT no transcribió nada
+
+export function setFallbackAudio(buf: Buffer) { fallbackAudio = buf; }
+export function setFallbackNoAudio(buf: Buffer) { fallbackNoAudio = buf; }
+
+/** Devuelve el MP3 de "no te escuché bien" (´STT vacío), o null si no cargó. */
+export function obtenerFallbackNoAudio(): Buffer | null {
+  return fallbackNoAudio;
+}
+
+const dormir = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Otras voces en español que puedes probar cambiando EDGE_TTS_VOICE en .env:
 // es-MX-DaliaNeural   (femenina, México)
@@ -28,62 +49,27 @@ function sanitizeForTTS(text: string): string {
     .trim();
 }
 
-/**
- * Genera el audio (formato webm/opus) para un texto y lo guarda en disco.
- * Devuelve la ruta del archivo generado.
- * Usado por el chat interactivo por terminal (npm run dev).
- */
-export async function generarAudio(
-  texto: string,
-  carpetaSalida: string = "./audio-temp",
-  prosody?: ProsodyOptions
-): Promise<string> {
-  const tts = new MsEdgeTTS();
-  await tts.setMetadata(VOZ, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS);
-
-  const options: ProsodyOptions = {
-    pitch: PITCH,
-    rate: RATE,
-    ...prosody,
-  };
-
-  const textoLimpio = sanitizeForTTS(texto);
-  const operation = tts.toFile(carpetaSalida, textoLimpio, options);
-  const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error("TTS timeout")), TIMEOUT_MS)
-  );
-
-  const { audioFilePath } = await Promise.race([operation, timeout]);
-  return audioFilePath;
-}
-
-/**
- * Genera audio MP3 (24kHz, mono) listo para enviar al ESP32.
- * El ESP32 decodifica MP3 con ESP8266Audio y reproduce por I2S → MAX98357.
- * Usado por el endpoint HTTP /api/touch.
- *
- * Nota: Si ffmpeg está instalado en el servidor, se puede convertir a PCM crudo
- * para evitar la decodificación MP3 en el ESP32. Por ahora usamos MP3 porque
- * msedge-tts no soporta PCM directo y ffmpeg no siempre está disponible.
- */
-export async function generarAudioMP3(
+/** Sintetiza el MP3 UNA vez (sin reintentos). Devuelve el buffer o tira. */
+async function sintetizarMP3(
   texto: string,
   prosody?: ProsodyOptions
 ): Promise<Buffer> {
+  // Hook de prueba: TTS_FORCE_FAIL=1 simula que Edge falla siempre (para
+  // verificar en local que el fallback de emergencia responde sin silencio).
+  if (process.env.TTS_FORCE_FAIL === "1") {
+    throw new Error("TTS_FORCE_FAIL (simulación de fallo Edge)");
+  }
   const tts = new MsEdgeTTS();
   await tts.setMetadata(VOZ, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
-  const options: ProsodyOptions = {
-    pitch: PITCH,
-    rate: RATE,
-    ...prosody,
-  };
-
   const textoLimpio = sanitizeForTTS(texto);
-  const carpetaTemp = "./audio-temp";
-  fs.mkdirSync(carpetaTemp, { recursive: true });
+  fs.mkdirSync(CARPETA_TEMP, { recursive: true });
 
-  const operation = tts.toFile(carpetaTemp, textoLimpio, options);
+  const operation = tts.toFile(
+    CARPETA_TEMP,
+    textoLimpio,
+    { pitch: PITCH, rate: RATE, ...prosody }
+  );
   const timeout = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error("TTS timeout")), TIMEOUT_MS)
   );
@@ -95,4 +81,48 @@ export async function generarAudioMP3(
   try { fs.unlinkSync(audioFilePath); } catch { /* ignore */ }
 
   return mp3Buffer;
+}
+
+/**
+ * Genera audio MP3 (24kHz, mono) listo para enviar al ESP32.
+ * Reintenta errores transitorios de Edge con backoff; si TODOS fallan,
+ * devuelve el MP3 de emergencia cacheado en vez de tirar — Ivi nunca se
+ * queda muda.
+ */
+export async function generarAudioMP3(
+  texto: string,
+  prosody?: ProsodyOptions
+): Promise<Buffer> {
+  let ultimoError: unknown = null;
+  for (let intento = 1; intento <= RETRIES + 1; intento++) {
+    try {
+      const buf = await sintetizarMP3(texto, prosody);
+      console.log(
+        `[TTS] ok intento ${intento}/${RETRIES + 1}: ${texto.length} chars, ${buf.length} bytes`
+      );
+      return buf;
+    } catch (err: any) {
+      ultimoError = err;
+      console.error(`[TTS] intento ${intento}/${RETRIES + 1} falló: ${err.message}`);
+      if (intento <= RETRIES) await dormir(BACKOFF_BASE_MS * intento);
+    }
+  }
+  console.error("[TTS] sin reintentos — sirviendo MP3 de emergencia:", (ultimoError as Error)?.message);
+  if (fallbackAudio) return fallbackAudio;
+  throw ultimoError as Error;
+}
+
+/**
+ * Genera audio y lo guarda en disco (chat interactivo por terminal).
+ */
+export async function generarAudio(
+  texto: string,
+  carpetaSalida: string = "./audio-temp",
+  prosody?: ProsodyOptions
+): Promise<string> {
+  const buffer = await generarAudioMP3(texto, prosody);
+  const archivo = path.join(carpetaSalida, `respuesta_${Date.now()}.mp3`);
+  fs.mkdirSync(carpetaSalida, { recursive: true });
+  fs.writeFileSync(archivo, buffer);
+  return archivo;
 }
