@@ -15,6 +15,9 @@ const MAX_MSGS = parseInt(process.env.SESSION_MAX_MSGS || "12", 10);
 export interface Session {
   historial: ConversationMessage[];
   updatedAt: number;
+  // Id de la conversación PERSISTIDA (historial.ts). null hasta que el primer
+  // turno de la sesión la abre en Turso.
+  id: number | null;
 }
 
 const sesiones = new Map<string, Session>();
@@ -27,7 +30,7 @@ export function obtenerSesion(clave: string): Session {
   const ahora = Date.now();
   let s = sesiones.get(clave);
   if (!s || ahora - s.updatedAt > IDLE_MS) {
-    s = { historial: [], updatedAt: ahora };
+    s = { historial: [], updatedAt: ahora, id: null };
     sesiones.set(clave, s);
   } else {
     s.updatedAt = ahora;

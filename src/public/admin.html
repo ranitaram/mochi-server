@@ -8,6 +8,7 @@
   body{margin:0;background:#17181c;color:#e8e8f0;font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
   header{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.4rem;background:#23252b;border-bottom:1px solid #33363f}
   header h1{font-size:1.1rem;margin:0;color:#7ed3a0}
+  header a{color:#7ed3a0;text-decoration:none;font-size:.9rem}
   header button{background:#4a4e59;color:#fff;border:0;border-radius:8px;padding:.45rem .9rem;cursor:pointer}
   main{max-width:760px;margin:0 auto;padding:1.4rem}
   .card{background:#23252b;border:1px solid #33363f;border-radius:12px;padding:1rem 1.2rem;margin-bottom:1.2rem}
@@ -25,13 +26,16 @@
   .empty{color:#7c8296;font-size:.9rem}
   .err{color:#ff7b72;font-size:.85rem;margin-top:.5rem}
   .ok{color:#7ed3a0;font-size:.85rem;margin-top:.5rem}
-  .toolbar{display:flex;gap:.5rem}
+  .toolbar{display:flex;gap:.5rem;align-items:center}
 </style>
 </head>
 <body>
 <header>
   <h1>Ivi · Redes WiFi</h1>
-  <button id="logout">Cerrar sesión</button>
+  <div class="toolbar">
+    <a href="/historial">Historial →</a>
+    <button id="logout">Cerrar sesión</button>
+  </div>
 </header>
 
 <main>

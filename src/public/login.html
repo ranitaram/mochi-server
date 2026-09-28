@@ -41,7 +41,9 @@ document.getElementById("login").addEventListener("submit", async (e) => {
       // Guardamos el token como fallback por si el navegador bloquea cookies;
       // admin.html lo manda como Authorization: Bearer en cada request.
       if (j.token) sessionStorage.setItem("ivi_token", j.token);
-      location.href = j.redirect || "/admin";
+      const next = new URLSearchParams(location.search).get("next");
+      const destino = next && next.startsWith("/") && !next.startsWith("//") ? next : "/admin";
+      location.href = destino;
     } else msg.textContent = j.error || "Error de login";
   } catch (err) {
     msg.textContent = "No se pudo conectar";

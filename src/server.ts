@@ -13,9 +13,20 @@ import { transcribirAudio } from "./stt";
 import { generarRespuesta, extraerHechos, sugiereExtraerHechos } from "./llm";
 import { generarAudioMP3, setFallbackAudio, setFallbackNoAudio, obtenerFallbackNoAudio } from "./tts";
 import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
+import {
+  inicializarHistorial,
+  abrirConversacion,
+  agregarMensajeHistorial,
+  listarHistorial,
+} from "./historial";
 import { deviceRouter } from "./deviceRoutes";
-import { loginAdmin, logoutAdmin, diagnosticoAuth } from "./auth";
-import { obtenerSesion, agregarMensaje, quitarUltimoMensajeUsuario } from "./session";
+import { loginAdmin, logoutAdmin, diagnosticoAuth, requireAdmin } from "./auth";
+import {
+  obtenerSesion,
+  agregarMensaje,
+  quitarUltimoMensajeUsuario,
+  Session,
+} from "./session";
 
 const app = express();
 // Confiar en el X-Forwarded-For de los proxies (Render) para que req.ip sea la
@@ -44,6 +55,23 @@ app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] })
 // API de dispositivos / redes (Prisma + PostgreSQL)
 app.use(deviceRouter);
 
+// Historial de conversaciones (admin): últimas 50 conversaciones con sus
+// mensajes, para la web /historial. Solo lectura.
+app.get("/api/historial", requireAdmin, async (_req, res) => {
+  try {
+    const conversaciones = await listarHistorial(50);
+    if (conversaciones === null) {
+      res.status(503).json({ error: "Historial no disponible (Turso no configurado)" });
+      return;
+    }
+    res.set("Cache-Control", "no-store");
+    res.json({ conversaciones });
+  } catch (err: any) {
+    console.error("[historial] Error leyendo historial:", err?.message ?? err);
+    res.status(500).json({ error: "Error leyendo historial" });
+  }
+});
+
 // --- Memoria persistente ---
 let contextoHechos = "";
 
@@ -69,6 +97,7 @@ cargarFallbacksMp3();
 async function initMemory() {
   try {
     await inicializarDB();
+    await inicializarHistorial();
     const hechos = await obtenerHechos();
     if (hechos.length > 0) {
       contextoHechos =
@@ -78,6 +107,31 @@ async function initMemory() {
   } catch (err: any) {
     console.error("No se pudo conectar a Turso (memoria deshabilitada):", err.message);
   }
+}
+
+// --- Historial persistente (Turso) ---
+// Registra un turno (usuario + Ivi) en fire-and-forget: abre la conversación
+// si aún no existe (sesion.id) y encola los INSERT sin bloquear la respuesta
+// de audio. Si Turso no está, no-op con log — nunca rompe el server. Acepta
+// sesión ya obtenida para reutilizar su conversación; si viene undefined la
+// obtiene sola (turnos que terminan antes del bloque de sesión, ej. eco).
+function registrarTurno(
+  clave: string,
+  sesionAnterior: Session | undefined,
+  textoUsuario?: string,
+  textoIvi?: string
+): void {
+  const sesion = sesionAnterior ?? obtenerSesion(clave);
+  (async () => {
+    try {
+      if (sesion.id == null) sesion.id = await abrirConversacion(clave);
+      if (sesion.id == null) return;
+      if (textoUsuario) await agregarMensajeHistorial(sesion.id, "user", textoUsuario);
+      if (textoIvi) await agregarMensajeHistorial(sesion.id, "assistant", textoIvi);
+    } catch (err: any) {
+      console.error("[historial] Error guardando turno:", err?.message ?? err);
+    }
+  })();
 }
 
 // --- Health check ---
@@ -136,6 +190,7 @@ app.post("/api/touch", async (req, res) => {
     return;
   }
 
+  const claveCliente = req.ip ?? req.socket.remoteAddress ?? "desconocido";
   console.log(`[touch] Audio recibido: ${audioBuffer.length} bytes`);
   // DIAGNOSTICO: copia permanente del ULTIMO PTT tal cual lo oye Groq, para
   // que podamos analizar su perfil de energia (eco al inicio vs voz fresca).
@@ -156,6 +211,12 @@ app.post("/api/touch", async (req, res) => {
         "X-Ivi-Emocion": "neutral",
       });
       res.send(mp3);
+      registrarTurno(
+        claveCliente,
+        undefined,
+        "(silencio o eco, sin transcripción)",
+        "No te escuché, acerca el micrófono a tu boca y repite."
+      );
       return;
     }
     console.log(`[touch] Audio con VOZ (RMS=${rms}) → Groq`);
@@ -178,17 +239,24 @@ app.post("/api/touch", async (req, res) => {
     } else {
       res.status(422).json({ error: "No se pudo transcribir el audio" });
     }
+    registrarTurno(
+      claveCliente,
+      undefined,
+      "(audio sin transcripción)",
+      fallbackStt
+        ? "No te escuché bien, repetí lo que me dijiste, porfa."
+        : "(fallo STT sin audio de respaldo)"
+    );
     return;
   }
   console.log(`[touch] Transcripción: "${textoUsuario}" (${Date.now() - inicio}ms)`);
 
   // 2. Sesión de conversación: cada cliente tiene su historial en memoria.
   //    Se abre de cero si pasó SESSION_IDLE_MS (default 15 min) sin hablar.
-  const claveSesion = req.ip ?? req.socket.remoteAddress ?? "desconocido";
-  const sesion = obtenerSesion(claveSesion);
+  const sesion = obtenerSesion(claveCliente);
   agregarMensaje(sesion, { role: "user", content: textoUsuario });
   console.log(
-    `[touch] Sesión ${claveSesion}: historial de ${sesion.historial.length} mensaje(s)`
+    `[touch] Sesión ${claveCliente}: historial de ${sesion.historial.length} mensaje(s)`
   );
 
   // 3. Generar respuesta de Ivi con el historial completo de la sesión
@@ -212,11 +280,13 @@ app.post("/api/touch", async (req, res) => {
     console.log(`[touch] Respuesta enviada: ${mp3Buffer.length} bytes MP3 (${Date.now() - inicio}ms total)`);
 
     agregarMensaje(sesion, { role: "assistant", content: respuesta.texto });
+    registrarTurno(claveCliente, sesion, textoUsuario, respuesta.texto);
   } catch (err: any) {
     console.error("[touch] Error generando audio:", err.message);
     // Ivi no pudo responder: quitar la pregunta del historial para que no
     // quede como "contexto fantasma" que contamine la próxima pregunta.
     quitarUltimoMensajeUsuario(sesion);
+    registrarTurno(claveCliente, sesion, textoUsuario, "(no llegó a hablar: error de audio)");
     res.status(500).json({ error: "Error generando audio" });
     return;
   }

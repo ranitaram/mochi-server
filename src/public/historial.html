@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ivi · Historial</title>
+<style>
+  body{margin:0;background:#17181c;color:#e8e8f0;font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+  header{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap;padding:1rem 1.4rem;background:#23252b;border-bottom:1px solid #33363f}
+  header h1{font-size:1.1rem;margin:0;color:#7ed3a0}
+  header a{color:#7ed3a0;text-decoration:none;font-size:.9rem}
+  header button{background:#4a4e59;color:#fff;border:0;border-radius:8px;padding:.45rem .9rem;cursor:pointer;font-size:.85rem}
+  header button:hover{background:#5a5e6b}
+  .toolbar{display:flex;gap:.5rem;align-items:center}
+  main{max-width:720px;margin:0 auto;padding:1.4rem}
+  .card{background:#23252b;border:1px solid #33363f;border-radius:12px;padding:1rem 1.2rem;margin-bottom:1.2rem}
+  .card-head{display:flex;justify-content:space-between;align-items:baseline;gap:.6rem;margin-bottom:.6rem}
+  .card-head h2{font-size:.95rem;margin:0;color:#9aa0b4;text-transform:uppercase;letter-spacing:.05em}
+  .card-head .when{font-size:.78rem;color:#6f7589}
+  .msgs{display:flex;flex-direction:column;gap:.5rem}
+  .msg{max-width:78%;padding:.55rem .8rem;border-radius:12px;font-size:.9rem;line-height:1.4;white-space:pre-wrap;word-break:break-word}
+  .msg .meta{display:block;font-size:.7rem;color:#8a90a5;margin-top:.3rem;opacity:.85}
+  .user{background:#2f9e63;color:#fff;margin-left:auto;border-bottom-right-radius:2px}
+  .ivi{background:#3a3d46;color:#e8e8f0;margin-right:auto;border-bottom-left-radius:2px}
+  .comodoro{color:#8a90a5;font-style:italic}
+  .empty,.err,.ok{font-size:.9rem;margin-top:.6rem}
+  .err{color:#ff7b72}
+  .ok{color:#7ed3a0}
+  .empty{color:#7c8296}
+  @media(max-width:480px){.msg{max-width:92%}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Ivi · Historial</h1>
+  <div class="toolbar">
+    <a href="/admin">← Redes WiFi</a>
+    <button id="refresh">Actualizar</button>
+    <button id="logout">Cerrar sesión</button>
+  </div>
+</header>
+
+<main>
+  <div id="lista"></div>
+  <p class="err" id="err"></p>
+  <p class="ok" id="ok"></p>
+</main>
+
+<script>
+const tokenUrl = new URLSearchParams(location.search).get("t");
+const tokenSesion = tokenUrl || sessionStorage.getItem("ivi_token");
+const $ = (id) => document.getElementById(id);
+
+function mostrarErr(m) { $("err").textContent = m; }
+function mostrarOk(m) { $("ok").textContent = m; setTimeout(() => ($("ok").textContent = ""), 3000); }
+
+async function api(url, opts = {}) {
+  const headers = {};
+  if (tokenSesion) headers["Authorization"] = "Bearer " + tokenSesion;
+  const r = await fetch(url, { credentials: "same-origin", headers, ...opts });
+  if (r.status === 401) {
+    sessionStorage.removeItem("ivi_token");
+    location.href = "/login?next=/historial";
+    throw new Error("sin sesión");
+  }
+  return { status: r.status, body: await r.json().catch(() => ({})) };
+}
+
+// "YYYY-MM-DD HH:MM:SS" (UTC de Turso) -> Date local
+function fechaUTC(s) { return new Date(s.replace(" ", "T") + "Z"); }
+
+function fechaRel(fecha) {
+  if (!fecha) return "";
+  const d = fechaUTC(fecha);
+  const diff = Date.now() - d.getTime();
+  const min = Math.floor(diff / 60000);
+  if (diff < 45000) return "recién";
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `hace ${h} h`;
+  if (h < 48) return "ayer";
+  return d.toLocaleDateString("es-AR", { day: "numeric", month: "short" });
+}
+
+function fechaHora(fecha) {
+  if (!fecha) return "";
+  return fechaUTC(fecha).toLocaleString("es-AR", {
+    day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function esc(t) {
+  const div = document.createElement("div");
+  div.textContent = t;
+  return div.innerHTML;
+}
+
+async function cargar() {
+  mostrarErr("");
+  const { status, body } = await api("/api/historial");
+  if (status === 503) { mostrarErr(body.error || "Historial no disponible"); return; }
+  if (status !== 200) { mostrarErr(body.error || "Error cargando historial"); return; }
+
+  const lista = $("lista");
+  lista.innerHTML = "";
+  const convs = body.conversaciones || [];
+
+  if (!convs.length) {
+    lista.innerHTML = '<p class="empty">Todavía no hay conversaciones. Hablale a Ivi y aparecerán acá.</p>';
+    return;
+  }
+
+  for (const c of convs) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const head = document.createElement("div");
+    head.className = "card-head";
+    const h2 = document.createElement("h2");
+    h2.textContent = "Conversación";
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = fechaRel(c.inicio);
+    head.append(h2, when);
+
+    const msgs = document.createElement("div");
+    msgs.className = "msgs";
+    for (const m of c.mensajes || []) {
+      const b = document.createElement("div");
+      const rolClass = m.rol === "user" ? "user" : "ivi";
+      b.className = "msg " + rolClass;
+      if (!m.contenido) b.classList.add("comodoro");
+      b.textContent = m.contenido;
+      const meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = m.rol === "user" ? "Tú · " + fechaHora(m.fecha) : "Ivi · " + fechaHora(m.fecha);
+      b.appendChild(meta);
+      msgs.appendChild(b);
+    }
+    card.append(head, msgs);
+    lista.appendChild(card);
+  }
+  mostrarOk(convs.length + " conversaciones");
+}
+
+$("refresh").addEventListener("click", () => cargar());
+$("logout").addEventListener("click", async () => {
+  sessionStorage.removeItem("ivi_token");
+  await fetch("/admin/logout", { method: "POST" });
+  location.href = "/login";
+});
+
+cargar();
+</script>
+</body>
+</html>
