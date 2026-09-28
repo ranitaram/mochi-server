@@ -31,6 +31,11 @@ const TIMEOUT_MS = 15_000;      // timeout de CADA llamada a Groq (10s cortaba
 const RETRIES = 3;              // reintentos para errores transitorios
 const RETRIES_TIMEOUT = 1;      // reintentos extra cuando es NUESTRO timeout
 const BACKOFF_BASE_MS = 800;    // backoff base entre reintentos
+// El ESP32 espera 65s el POST /api/touch. Si el LLM encadena 4 timeouts
+// (~60s) se come toda esa ventana y el TTS ya no tiene tiempo: Ivi se queda
+// muda. Con este presupuesto cortamos los reintentos y devolvemos la frase
+// de emergencia CON tiempo de sobra para sintetizarla y enviarla.
+const BUDGET_MS = 40_000;       // tope de tiempo total gastado en generarRespuesta
 
 // (A) Pool rotativo: emociones variadas, se rotan con fallbackIdx.
 const FRASES_EMERGENCIA = [
@@ -170,7 +175,17 @@ export async function generarRespuesta(
   // errores permanentes. Al agotar → frase del pool rotativo (nunca
   // la misma dos veces seguidas).
   const system = contextoMemo ? SYSTEM_PROMPT + "\n" + contextoMemo : SYSTEM_PROMPT;
+  const t0 = Date.now();
   for (let intento = 0; intento <= RETRIES; intento++) {
+    // Presupuesto: si un intento más ya no entraría en BUDGET_MS, cortamos
+    // acá y devolvemos la frase del pool (el TTS todavía tiene tiempo).
+    if (intento > 0 && Date.now() - t0 + TIMEOUT_MS > BUDGET_MS) {
+      console.warn(
+        `Groq: presupuesto de ${BUDGET_MS}ms agotado (lleva ${Date.now() - t0}ms) — frase de emergencia`
+      );
+      return siguienteFallback();
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 

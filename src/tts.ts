@@ -22,6 +22,12 @@ const CARPETA_TEMP = "./audio-temp";
 let fallbackAudio: Buffer | null = null; //   TTS agotó reintentos
 let fallbackNoAudio: Buffer | null = null; // STT no transcribió nada
 
+// Último MP3 sintetizado con EXITO en esta instancia del server. Si Edge TTS
+// se cae (muy común: Microsoft cambia endpoints / se satura), en vez de
+// responder 500 y dejar a Ivi muda, reusamos este audio ya sintético. Es la
+// red de seguridad que evita los turnos "(no llegó a hablar: error de audio)".
+let ultimoMp3Valido: Buffer | null = null;
+
 export function setFallbackAudio(buf: Buffer) { fallbackAudio = buf; }
 export function setFallbackNoAudio(buf: Buffer) { fallbackNoAudio = buf; }
 
@@ -91,12 +97,14 @@ async function sintetizarMP3(
  */
 export async function generarAudioMP3(
   texto: string,
-  prosody?: ProsodyOptions
+  prosody?: ProsodyOptions,
+  onFallback?: (motivo: string) => void
 ): Promise<Buffer> {
   let ultimoError: unknown = null;
   for (let intento = 1; intento <= RETRIES + 1; intento++) {
     try {
       const buf = await sintetizarMP3(texto, prosody);
+      ultimoMp3Valido = buf;
       console.log(
         `[TTS] ok intento ${intento}/${RETRIES + 1}: ${texto.length} chars, ${buf.length} bytes`
       );
@@ -107,8 +115,19 @@ export async function generarAudioMP3(
       if (intento <= RETRIES) await dormir(BACKOFF_BASE_MS * intento);
     }
   }
-  console.error("[TTS] sin reintentos — sirviendo MP3 de emergencia:", (ultimoError as Error)?.message);
-  if (fallbackAudio) return fallbackAudio;
+  console.error("[TTS] sin reintentos — audio de emergencia:", (ultimoError as Error)?.message);
+  // Cascada de emergencia: preferimos el MP3 cacheado de los assets; si no
+  // cargó al boot, reusamos el último MP3 bueno; solo si no hay NADA se tira.
+  if (fallbackAudio) {
+    console.log("[TTS] -> MP3 de emergencia de assets");
+    onFallback?.("Edge TTS caído: MP3 de emergencia de assets");
+    return fallbackAudio;
+  }
+  if (ultimoMp3Valido) {
+    console.log("[TTS] -> último MP3 válido cacheado");
+    onFallback?.("Edge TTS caído: último MP3 válido");
+    return ultimoMp3Valido;
+  }
   throw ultimoError as Error;
 }
 

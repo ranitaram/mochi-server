@@ -266,21 +266,38 @@ app.post("/api/touch", async (req, res) => {
   // 4. Generar audio MP3 y agregar la respuesta al historial SOLO si se
   //    logró producir el audio (si no, el usuario no la oyó y mejor que la
   //    conversación no la recuerde).
+  let motivoEmergencia: string | null = null;
   try {
-    const mp3Buffer = await generarAudioMP3(respuesta.texto);
+    const mp3Buffer = await generarAudioMP3(respuesta.texto, undefined, (m) => {
+      motivoEmergencia = m;
+    });
+
+    // Si el TTS se cayó y servimos audio de emergencia, el usuario NO oyó la
+    // respuesta real: headers e historial cuentan la verdad (lo que sonó).
+    const TEXTO_EMERGENCIA = "Se me cortó la señal, decímelo otra vez";
+    const textoOido = motivoEmergencia
+      ? `${TEXTO_EMERGENCIA} (audio de emergencia: ${motivoEmergencia})`
+      : respuesta.texto;
 
     // Responder con audio como body y texto/emoción en headers
     res.set({
       "Content-Type": "audio/mpeg",
-      "X-Ivi-Texto": respuesta.texto,
+      "X-Ivi-Texto": textoOido,
       "X-Ivi-Emocion": respuesta.emocion,
       "X-Ivi-Audio-Length": String(mp3Buffer.length),
     });
     res.send(mp3Buffer);
     console.log(`[touch] Respuesta enviada: ${mp3Buffer.length} bytes MP3 (${Date.now() - inicio}ms total)`);
 
-    agregarMensaje(sesion, { role: "assistant", content: respuesta.texto });
-    registrarTurno(claveCliente, sesion, textoUsuario, respuesta.texto);
+    if (!motivoEmergencia) {
+      agregarMensaje(sesion, { role: "assistant", content: respuesta.texto });
+    } else {
+      // La frase de emergencia NO entra como respuesta real del hilo: la
+      // persona no la oyó, meterla contaminaría la conversación.
+      quitarUltimoMensajeUsuario(sesion);
+      console.log(`[touch] TTS en emergencia (${motivoEmergencia}): sin audio real para la persona`);
+    }
+    registrarTurno(claveCliente, sesion, textoUsuario, textoOido);
   } catch (err: any) {
     console.error("[touch] Error generando audio:", err.message);
     // Ivi no pudo responder: quitar la pregunta del historial para que no
