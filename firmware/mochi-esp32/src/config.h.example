@@ -43,6 +43,16 @@
 #define REC_MAX_SECONDS  8       // segundos (push-to-talk)
 #define REC_SAMPLE_RATE  16000   // Hz (16kHz, mono, 16 bits)
 
+// Al iniciar cada pulsacion el DMA I2S ya trae ~1s de muestras viejas en su
+// buffer circular. Antes se descartaban 45 lecturas (~0.7-1.2s), lo que se
+// comia el COMIENZO de la frase ("...de la palabra" en vez de "significado de
+// la palabra"). Ahora se descartan solo 6 lecturas.
+#define REC_FLUSH_READS  6       // lecturas de 2048B a descartar al iniciar
+// Preroll: ms de audio anteriores al disparo del PTT que se conservan, para
+// no perder la primera sílaba aunque la persona empiece a hablar al instante.
+#define REC_PRE_MS       250     // ms previos al PTT que se guardan
+#define REC_POST_MS      150     // ms extra tras soltar (cola de la palabra)
+
 // ------------------------ Pines --------------------------
 // OLED SSD1306 (I2C)
 #define PIN_OLED_SDA     8

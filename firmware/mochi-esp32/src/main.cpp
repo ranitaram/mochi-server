@@ -297,6 +297,17 @@ void loop() { delay(1000); }
 // ------------------------------------------------------------------
 #if !TEST_OLED && !TEST_MIC && !TEST_AMP && !TEST_JOY && !TEST_ALL && !TEST_MP3 && !TEST_BATTERY
 
+// Frase de emergencia embebida en flash ("Se me cortó la señal...") para que
+// Ivi NUNCA quede muda cuando el server no responde (transporte/timeout/WiFi).
+#include "fallback_local_mp3.h"
+static void playLocalFallback() {
+    Serial.println("[fsm] Sin respuesta del server: frase local de emergencia");
+    oledShowFace(IviFace::NEUTRAL);
+    oledShowTalking(true);
+    audioPlayBytes(FALLBACK_LOCAL_MP3, FALLBACK_LOCAL_MP3_LEN);
+    oledShowTalking(false);
+}
+
 // Trae del servidor la lista de redes WiFi de esta Ivi (si hay DEVICE_TOKEN
 // configurado) y la deja guardada en NVS con el orden de prioridad.
 static void syncNetworks() {
@@ -405,6 +416,7 @@ void runTurn() {
     if (!wifiConnected()) {
         Serial.println("[fsm] Sin WiFi");
         oledAnimStop();
+        playLocalFallback();
         oledShowFace(IviFace::NEUTRAL);
         return;
     }
@@ -429,6 +441,7 @@ void runTurn() {
         Serial.printf("[fsm] Error HTTP definitivo: %d\n", code);
         oledAnimStop();
         httpClientFree(reply);
+        playLocalFallback();
         oledShowFace(IviFace::NEUTRAL);
         return;
     }

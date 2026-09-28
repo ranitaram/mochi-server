@@ -179,7 +179,10 @@ size_t audioRecordWav(uint8_t** outBuffer, bool (*shouldStop)(void)) {
         uint8_t flush[2048];
         size_t got = 0;
         uint32_t tFlush = 0;
-        while (tFlush < 45) {                 // ~45 lecturas de 2048 = ~1.2s
+        // Flush ACOTADO: descarta solo lo que puede haber en el anillo DMA
+        // (el 45-read completo se comia ~0.7-1.2s del arranque y cortaba la
+        // primera palabra si coincidia con el inicio de tu voz).
+        while (tFlush < REC_FLUSH_READS) {
             if (!micRead(flush, sizeof(flush), &got)) break;
             if (got == 0) { vTaskDelay(pdMS_TO_TICKS(2)); continue; }
             tFlush++;
@@ -230,16 +233,29 @@ size_t audioRecordWav(uint8_t** outBuffer, bool (*shouldStop)(void)) {
         size_t ns = pcmLen / 2;
         for (size_t i = 0; i < ns; i++) s16[i] = (int16_t)((int32_t)s16[i] * 10 / 10);
 
+        // Piso de ruido = energia del tramo MAS SILENCIOSO de los primeros
+        // 300ms. Antes se usaban los primeros 40ms a secas: si la persona
+        // empezaba a hablar justo al apretar, el piso quedaba en nivel de voz,
+        // la puerta nunca se abria y el recorte de ambiente no hacia nada.
         size_t floorN = sampleRate / 25;          // 40ms
         if (floorN > ns) floorN = ns;
-        int64_t acc = 0;
-        for (size_t i = 0; i < floorN; i++) acc += (int64_t)s16[i] * s16[i];
-        int64_t floorSq = acc / (floorN ? floorN : 1);
+        size_t scanN = sampleRate * 3 / 10;      // 300ms candidatos
+        if (scanN > ns) scanN = ns;
+        size_t stepN = floorN / 2 ? floorN / 2 : 1;
+        int64_t floorSq = -1;
+        for (size_t off = 0; off + floorN <= scanN; off += stepN) {
+            int64_t acc = 0;
+            for (size_t i = off; i < off + floorN; i++) acc += (int64_t)s16[i] * s16[i];
+            int64_t e = acc / (floorN ? floorN : 1);
+            if (floorSq < 0 || e < floorSq) floorSq = e;
+        }
+        if (floorSq < 0) floorSq = 0;
         int64_t thresh = (floorSq > 4) ? (floorSq * 3) : 800;
 
         size_t win = sampleRate / 100;             // 10ms
         if (win < 1) win = 1;
-        size_t prePost = sampleRate / 33;           // ~30ms
+        size_t prePost = (size_t)((uint64_t)sampleRate * REC_PRE_MS / 1000);   // preroll de arranque
+        size_t postTail = (size_t)((uint64_t)sampleRate * REC_POST_MS / 1000); // cola final
         size_t start = 0, end = ns;
         bool found = false;
         for (size_t i = 0; i + win <= ns; i += win) {
@@ -254,12 +270,38 @@ size_t audioRecordWav(uint8_t** outBuffer, bool (*shouldStop)(void)) {
                 for (size_t k = i; k < i + win; k++) e += (int64_t)s16[k] * s16[k];
                 if (e > thresh * (int64_t)win) last = i;
             }
-            if (last + win + prePost < ns) end = last + win + prePost;
+            if (last + win + postTail < ns) end = last + win + postTail;
             size_t keep = end - start;
-            if (keep >= sampleRate / 4) {          // ≥250ms utiles
+            if (keep >= sampleRate / 4) {          // >=250ms utiles
+                // Calibracion: nivel de voz en el arranque del tramo guardado
+                // (si headPeak es bajo, el comienzo de la frase se sigue cortando).
+                long headPeak = 0;
+                size_t hwin = (keep > (size_t)sampleRate / 10) ? (size_t)sampleRate / 10 : keep;
+                for (size_t i = 0; i < hwin; i++) {
+                    long v = s16[start + i];
+                    if (v < 0) v = -v;
+                    if (v > headPeak) headPeak = v;
+                }
+                Serial.printf("[rec] flush=%d recorte keep=%ums head_peak=%ld pcmLen=%u\n",
+                              REC_FLUSH_READS, (unsigned)(keep * 1000 / sampleRate),
+                              (long)headPeak, (unsigned)(keep * 2));
                 memmove(s16, s16 + start, keep * 2);
                 pcmLen = (uint32_t)(keep * 2);
             }
+        } else {
+            // No se encontro tramo por encima del umbral (p. ej. la persona
+            // empezo a hablar dentro de la ventana usada como piso de ruido).
+            // Se envia TODO: es preferible un poco de ambiente a perder el
+            // comienzo de la frase.
+            long headPeak = 0;
+            size_t hwin = (ns > (size_t)sampleRate / 10) ? (size_t)sampleRate / 10 : ns;
+            for (size_t i = 0; i < hwin; i++) {
+                long v = s16[i];
+                if (v < 0) v = -v;
+                if (v > headPeak) headPeak = v;
+            }
+            Serial.printf("[rec] flush=%d sin_recorte pcmLen=%u head_peak=%ld\n",
+                          REC_FLUSH_READS, (unsigned)pcmLen, (long)headPeak);
         }
     }
 
