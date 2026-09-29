@@ -24,14 +24,38 @@ services:
     envVars:
       - key: GROQ_API_KEY
         sync: false
+      # OJO: el límite de Groq son 200,000 tokens/día POR MODELO, y este es el
+      # que más rápido contesta (medido: 0.7-0.8s, 150-216 tokens de salida).
+      # Si este modelo se queda sin cuota, el server pasa solo al de respaldo
+      # sin gastar un token más — por eso conviene tener los dos.
       - key: GROQ_MODEL
-        value: llama-3.3-70b-versatile
+        value: openai/gpt-oss-120b
+      - key: GROQ_MODEL_FALLBACK
+        value: openai/gpt-oss-20b
+      - key: GROQ_MODEL_EXTRACCION
+        value: openai/gpt-oss-20b
+      # NO definas GROQ_REASONING_EFFORT: los modelos gpt-oss solo aceptan
+      # low/medium/high y con cualquier otro valor Groq rechaza el request con
+      # 400. Para respuesta corta no hace falta.
+      #
+      # La voz de Ivi. Tiene que ser la MISMA que usan los MP3 pregrabados
+      # (src/assets) y el embebido en el firmware; si se desincroniza, la frase
+      # de emergencia suena con otra persona que el resto del robot.
       - key: EDGE_TTS_VOICE
-        value: es-MX-JorgeNeural
+        value: es-MX-DaliaNeural
       - key: TTS_PITCH
         value: +20Hz
       - key: TTS_RATE
         value: "1.1"
+      # Zona horaria de "¿qué día es hoy?". El server corre en UTC, así que sin
+      # esto Ivi da el día y la hora equivocados.
+      - key: FECHA_TZ
+        value: America/Mazatlan
+      # Tope del turno completo (STT ya corrido + LLM + TTS). El ESP32 aborta el
+      # POST a los 65000ms: si el server se pasa, el dispositivo se queda sin
+      # audio. 45000 deja margen para la latencia de red.
+      - key: TURNO_DEADLINE_MS
+        value: "45000"
       - key: TURSO_DATABASE_URL
         sync: false
       - key: TURSO_AUTH_TOKEN
