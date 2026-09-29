@@ -6,14 +6,19 @@ import { MsEdgeTTS, OUTPUT_FORMAT, ProsodyOptions } from "msedge-tts";
 import fs from "fs";
 import path from "path";
 
-const VOZ = process.env.EDGE_TTS_VOICE || "es-MX-JorgeNeural";
+// La voz de Ivi. OJO: este valor es la fuente de verdad y TODO lo que suene
+// tiene que salir de acá: respuestas, frases de emergencia, MP3 pregrabados y
+// el MP3 embebido en el firmware. Si el default y los .env se desincronizan,
+// la frase de emergencia suena con OTRA voz que el resto del robot.
+const VOZ = process.env.EDGE_TTS_VOICE || "es-MX-DaliaNeural";
 const PITCH = process.env.TTS_PITCH || "+20Hz";
 const RATE = process.env.TTS_RATE || "1.1";
-// Respuestas largas (preguntas difíciles) tardan en sintetizarse: 10s era
-// demasiado justo y cortaba el audio -> silencio. 25s por intento.
-const TIMEOUT_MS = 25_000;
-const RETRIES = 2;
-const BACKOFF_BASE_MS = 800;
+// Respuestas largas tardan en sintetizarse, pero el ESP32 aborta el POST a los
+// 65s. Con 12s por intento y UN reintento el peor caso es ~25s: sobra tiempo
+// para el LLM (12s) + STT (2s) y el audio siempre llega al parlante.
+const TIMEOUT_MS = 12_000;
+const RETRIES = 1;
+const BACKOFF_BASE_MS = 400;
 const CARPETA_TEMP = "./audio-temp";
 
 // MP3 de EMERGENCIA (commiteados en src/assets, cargados en memoria al
@@ -28,8 +33,58 @@ let fallbackNoAudio: Buffer | null = null; // STT no transcribió nada
 // red de seguridad que evita los turnos "(no llegó a hablar: error de audio)".
 let ultimoMp3Valido: Buffer | null = null;
 
+// MP3 ya sintetizados por texto. Al arrancar calentamos las frases de
+// emergencia: son las que más se repiten cuando Groq no tiene cuota, y tenerlas
+// listas las hace instantáneas y SIEMPRE con la voz de Ivi (mismo motor, mismo
+// pitch y mismo rate que cualquier respuesta normal).
+const cachePorTexto = new Map<string, Buffer>();
+// Tope de seguridad: si alguien mandara a cachear texto ilimitado (no debería:
+// solo van las frases de emergencia) no crecemos sin fin en memoria.
+const MAX_CACHE = 24;
+const cachear = (clave: string, buf: Buffer) => {
+  if (cachePorTexto.size >= MAX_CACHE) cachePorTexto.clear();
+  cachePorTexto.set(clave, buf);
+};
+
 export function setFallbackAudio(buf: Buffer) { fallbackAudio = buf; }
 export function setFallbackNoAudio(buf: Buffer) { fallbackNoAudio = buf; }
+
+/**
+ * Sintetiza desde el cache por texto. Si ya está, no llama a Edge: es la vía
+ * normal cuando el texto es una frase de emergencia precargada.
+ */
+export async function generarAudioMP3Cacheado(
+  texto: string,
+  deadlineMs?: number
+): Promise<Buffer> {
+  const clave = texto.trim();
+  const hit = cachePorTexto.get(clave);
+  if (hit) return hit;
+  const buf = await generarAudioMP3(texto, undefined, undefined, deadlineMs);
+  cachear(clave, buf);
+  return buf;
+}
+
+/**
+ * Precalienta frases UNA POR UNA en segundo plano, con una pausa entre cada una:
+ * al arrancar no le aterrizan las 6 de golpe a Edge (que de por sí ya nos
+ * limita) y ninguna compite con un turno real. Los fallos se ignoran: si Edge
+ * no está listo, la frase se sintetiza en el momento en que se necesite.
+ */
+export function precachearFrases(frases: string[]): void {
+  void (async () => {
+    for (const frase of frases) {
+      const clave = frase.trim();
+      if (cachePorTexto.has(clave)) continue;
+      try {
+        cachear(clave, await sintetizarMP3(frase, undefined, TIMEOUT_MS, false));
+      } catch {
+        /* sin precache: se sintetiza en el turno */
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  })();
+}
 
 /** Devuelve el MP3 de "no te escuché bien" (´STT vacío), o null si no cargó. */
 export function obtenerFallbackNoAudio(): Buffer | null {
@@ -55,38 +110,85 @@ function sanitizeForTTS(text: string): string {
     .trim();
 }
 
+/**
+ * msedge-tts SIEMPRE escribe en `<carpeta>/audio.mp3` (no acepta nombre), así
+ * que dos síntesis simultáneas se pisan: una lee el archivo después de que la
+ * otra lo borró y truena con ENOENT. Serializamos TODAS las síntesis.
+ *
+ * La cola tiene dos prioridades: un turno real NUNCA espera a la precarga de
+ * arranque. Sin esto, si Edge TTS va lento al boot, la primera pregunta del
+ * niño esperaba detrás de las 6 frases de emergencia (medido: 90s de cuelgue).
+ */
+type Job = {
+  fn: () => Promise<Buffer>;
+  resolve: (b: Buffer) => void;
+  reject: (e: unknown) => void;
+  fg: boolean;
+};
+const pendientes: Job[] = [];
+let ocupada = false;
+
+function enSerializar<T>(fn: () => Promise<T>, fg = true): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    pendientes.push({ fn: fn as () => Promise<Buffer>, resolve: resolve as any, reject, fg });
+    void drenar();
+  });
+}
+
+async function drenar() {
+  if (ocupada) return;
+  ocupada = true;
+  try {
+    while (pendientes.length) {
+      // Primero lo del turno en curso; si no hay, seguimos con la precarga.
+      const i = pendientes.findIndex((j) => j.fg);
+      const job = pendientes.splice(i < 0 ? 0 : i, 1)[0];
+      try {
+        job.resolve(await job.fn());
+      } catch (err) {
+        job.reject(err);
+      }
+    }
+  } finally {
+    ocupada = false;
+  }
+}
+
 /** Sintetiza el MP3 UNA vez (sin reintentos). Devuelve el buffer o tira. */
 async function sintetizarMP3(
   texto: string,
-  prosody?: ProsodyOptions
+  prosody?: ProsodyOptions,
+  timeoutMs: number = TIMEOUT_MS,
+  fg = true
 ): Promise<Buffer> {
   // Hook de prueba: TTS_FORCE_FAIL=1 simula que Edge falla siempre (para
   // verificar en local que el fallback de emergencia responde sin silencio).
   if (process.env.TTS_FORCE_FAIL === "1") {
     throw new Error("TTS_FORCE_FAIL (simulación de fallo Edge)");
   }
-  const tts = new MsEdgeTTS();
-  await tts.setMetadata(VOZ, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+  return enSerializar(async () => {
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(VOZ, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
-  const textoLimpio = sanitizeForTTS(texto);
-  fs.mkdirSync(CARPETA_TEMP, { recursive: true });
+    const textoLimpio = sanitizeForTTS(texto);
+    fs.mkdirSync(CARPETA_TEMP, { recursive: true });
 
-  const operation = tts.toFile(
-    CARPETA_TEMP,
-    textoLimpio,
-    { pitch: PITCH, rate: RATE, ...prosody }
-  );
-  const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error("TTS timeout")), TIMEOUT_MS)
-  );
+    const operation = tts.toFile(
+      CARPETA_TEMP,
+      textoLimpio,
+      { pitch: PITCH, rate: RATE, ...prosody }
+    );
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("TTS timeout")), timeoutMs)
+    );
 
-  const { audioFilePath } = await Promise.race([operation, timeout]);
-  const mp3Buffer = fs.readFileSync(audioFilePath);
-
-  // Limpiar el archivo temporal
-  try { fs.unlinkSync(audioFilePath); } catch { /* ignore */ }
-
-  return mp3Buffer;
+    const { audioFilePath } = await Promise.race([operation, timeout]);
+    // Copiamos el buffer ANTES de borrar: otra síntesis encolada puede
+    // sobrescribir el nombre en cuanto terminamos.
+    const mp3Buffer = fs.readFileSync(audioFilePath);
+    try { fs.unlinkSync(audioFilePath); } catch { /* ignore */ }
+    return mp3Buffer;
+  }, fg);
 }
 
 /**
@@ -94,16 +196,25 @@ async function sintetizarMP3(
  * Reintenta errores transitorios de Edge con backoff; si TODOS fallan,
  * devuelve el MP3 de emergencia cacheado en vez de tirar — Ivi nunca se
  * queda muda.
+ *
+ * `deadlineMs` es el instante absoluto en que el dispositivo cierra la conexión:
+ * cada intento se recorta para no pasarse, garantiza que el audio llegue.
  */
 export async function generarAudioMP3(
   texto: string,
   prosody?: ProsodyOptions,
-  onFallback?: (motivo: string) => void
+  onFallback?: (motivo: string) => void,
+  deadlineMs?: number
 ): Promise<Buffer> {
   let ultimoError: unknown = null;
   for (let intento = 1; intento <= RETRIES + 1; intento++) {
+    const restante = deadlineMs ? deadlineMs - Date.now() : TIMEOUT_MS;
+    if (restante <= 0) {
+      ultimoError = new Error("TTS: sin tiempo restante antes del deadline del turno");
+      break;
+    }
     try {
-      const buf = await sintetizarMP3(texto, prosody);
+      const buf = await sintetizarMP3(texto, prosody, Math.min(TIMEOUT_MS, restante));
       ultimoMp3Valido = buf;
       console.log(
         `[TTS] ok intento ${intento}/${RETRIES + 1}: ${texto.length} chars, ${buf.length} bytes`

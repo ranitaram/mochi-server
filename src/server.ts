@@ -10,8 +10,15 @@ import path from "path";
 import fs from "fs";
 import express from "express";
 import { transcribirAudio } from "./stt";
-import { generarRespuesta, extraerHechos, sugiereExtraerHechos } from "./llm";
-import { generarAudioMP3, setFallbackAudio, setFallbackNoAudio, obtenerFallbackNoAudio } from "./tts";
+import {
+  generarRespuesta,
+  extraerHechos,
+  sugiereExtraerHechos,
+  resumenModelos,
+  FRASES_EMERGENCIA,
+  esFraseEmergencia,
+} from "./llm";
+import { generarAudioMP3, generarAudioMP3Cacheado, precachearFrases, setFallbackAudio, setFallbackNoAudio, obtenerFallbackNoAudio } from "./tts";
 import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
 import {
   inicializarHistorial,
@@ -33,6 +40,11 @@ const app = express();
 // IP real del ESP32 y las sesiones queden aisladas por dispositivo.
 app.set("trust proxy", true);
 const PORT = parseInt(process.env.PORT || "3000", 10);
+// El ESP32 hace http.setTimeout(65000) en el POST /api/touch: si el server se
+// pasa, el device cierra el socket y el turno se pierde. Este deadline es el
+// tope de TODO el turno (STT ya corrido + LLM + TTS) y se comparte entre las
+// dos etapas. 45s deja 20s de margen para latencia de red y arranque en frío.
+const DEADLINE_TURNO_MS = parseInt(process.env.TURNO_DEADLINE_MS || "45000", 10);
 
 // Body parser para audio crudo (ESP32 envía POST con Content-Type: audio/wav)
 app.use("/api/touch", express.raw({ type: "audio/wav", limit: "10mb" }));
@@ -93,6 +105,34 @@ function cargarFallbacksMp3() {
   }
 }
 cargarFallbacksMp3();
+
+/**
+ * Deja un valor listo para viajar en un header HTTP. Node lanza
+ * ERR_INVALID_CHAR con cualquier carácter fuera de Latin-1: una raya (—), una
+ * comilla tipográfica o una flecha en la respuesta de Ivi tumbaban el turno
+ * entero con 500 y sin audio. Acá se reemplazan por su equivalente ASCII. El
+ * texto limpio se pierde solo en el header (lo que se ESCUCHA es el MP3, que
+ * ya va sintetizado con la ortografía correcta).
+ */
+function headerSeguro(valor: string): string {
+  return valor
+    .replace(/[‘’‚‛′]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/[–—―−]/g, "-")
+    .replace(/…/g, "...")
+    .replace(/[^\x20-\x7E¡¿áéíóúüñÁÉÍÓÚÜÑ]/g, "?")
+    .slice(0, 900);
+}
+
+/** ¿El cliente ya se fue y la respuesta ya no se puede enviar? */
+function clienteSeFue(res: express.Response): boolean {
+  return res.headersSent || res.writableEnded || res.destroyed;
+}
+
+// Precalientamos las frases de emergencia: son la respuesta más frecuente
+// cuando Groq no tiene cuota diaria, y así salen al instante y con la misma
+// voz de Ivi. Va en background: no detiene el arranque.
+precachearFrases(FRASES_EMERGENCIA);
 
 async function initMemory() {
   try {
@@ -259,8 +299,13 @@ app.post("/api/touch", async (req, res) => {
     `[touch] Sesión ${claveCliente}: historial de ${sesion.historial.length} mensaje(s)`
   );
 
-  // 3. Generar respuesta de Ivi con el historial completo de la sesión
-  const respuesta = await generarRespuesta(sesion.historial, contextoHechos);
+  // 3. Generar respuesta de Ivi con el historial completo de la sesión.
+  //    El deadline es ABSOLUTO y se comparte con el TTS: el ESP32 aborta a los
+  //    65s, así que todo el turno (LLM + síntesis) tiene que caber ahí con
+  //    holgura. Antes el peor caso era 40s de LLM + 78s de TTS = 118s y el
+  //    device se iba antes de oír nada.
+  const deadline = inicio + DEADLINE_TURNO_MS;
+  const respuesta = await generarRespuesta(sesion.historial, contextoHechos, deadline);
   console.log(`[touch] Ivi [${respuesta.emocion}]: ${respuesta.texto} (${Date.now() - inicio}ms)`);
 
   // 4. Generar audio MP3 y agregar la respuesta al historial SOLO si se
@@ -268,9 +313,13 @@ app.post("/api/touch", async (req, res) => {
   //    conversación no la recuerde).
   let motivoEmergencia: string | null = null;
   try {
-    const mp3Buffer = await generarAudioMP3(respuesta.texto, undefined, (m) => {
-      motivoEmergencia = m;
-    });
+    // Las frases de emergencia van por el cache precalentado: salen al
+    // instante y con la misma voz de Ivi que cualquier respuesta normal.
+    const mp3Buffer = esFraseEmergencia(respuesta.texto)
+      ? await generarAudioMP3Cacheado(respuesta.texto, deadline)
+      : await generarAudioMP3(respuesta.texto, undefined, (m) => {
+          motivoEmergencia = m;
+        }, deadline);
 
     // Si el TTS se cayó y servimos audio de emergencia, el usuario NO oyó la
     // respuesta real: headers e historial cuentan la verdad (lo que sonó).
@@ -279,11 +328,15 @@ app.post("/api/touch", async (req, res) => {
       ? `${TEXTO_EMERGENCIA} (audio de emergencia: ${motivoEmergencia})`
       : respuesta.texto;
 
-    // Responder con audio como body y texto/emoción en headers
+    // Responder con audio como body y texto/emoción en headers.
+    // OJO: el texto va en un header, y Node lanza ERR_INVALID_CHAR con
+    // cualquier carácter fuera de Latin-1 (raya, comilla tipográfica...). Eso
+    // tumbaba el turno con 500 y dejaba la request colgada, así que aquí se
+    // limpia SIEMPRE, sin importar qué haya inventado el modelo.
     res.set({
       "Content-Type": "audio/mpeg",
-      "X-Ivi-Texto": textoOido,
-      "X-Ivi-Emocion": respuesta.emocion,
+      "X-Ivi-Texto": headerSeguro(textoOido),
+      "X-Ivi-Emocion": headerSeguro(respuesta.emocion),
       "X-Ivi-Audio-Length": String(mp3Buffer.length),
     });
     res.send(mp3Buffer);
@@ -299,12 +352,29 @@ app.post("/api/touch", async (req, res) => {
     }
     registrarTurno(claveCliente, sesion, textoUsuario, textoOido);
   } catch (err: any) {
+    // Si la respuesta ya se había enviado (o el device colgó antes de los
+    // 65s), el error NO es del TTS: antes se guardaba como "error de audio" y
+    // llenaba el historial de falsos positivos.
+    if (clienteSeFue(res)) {
+      console.warn(
+        `[touch] El cliente ya no está (${Date.now() - inicio}ms), el audio llegó tarde: ${err.message}`
+      );
+      if (!motivoEmergencia) agregarMensaje(sesion, { role: "assistant", content: respuesta.texto });
+      registrarTurno(claveCliente, sesion, textoUsuario, respuesta.texto);
+      return;
+    }
     console.error("[touch] Error generando audio:", err.message);
     // Ivi no pudo responder: quitar la pregunta del historial para que no
     // quede como "contexto fantasma" que contamine la próxima pregunta.
     quitarUltimoMensajeUsuario(sesion);
     registrarTurno(claveCliente, sesion, textoUsuario, "(no llegó a hablar: error de audio)");
-    res.status(500).json({ error: "Error generando audio" });
+    // SIEMPRE respondemos algo: si no, el ESP32 se queda esperando hasta que
+    // su propio timeout de 65s y la request queda colgada en el servidor.
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Error generando audio" });
+    } else {
+      res.end();
+    }
     return;
   }
 
@@ -335,6 +405,7 @@ async function main() {
     console.log(`Ivi server escuchando en http://localhost:${PORT}`);
     console.log(`  POST /api/touch — recibir audio del ESP32`);
     console.log(`  GET  /health    — health check (rápido, sin DB)`);
+    console.log(`  Groq: ${resumenModelos()} | deadline de turno ${DEADLINE_TURNO_MS}ms`);
   });
 
   initMemory().catch((err) => {
