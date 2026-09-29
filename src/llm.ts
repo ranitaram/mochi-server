@@ -67,12 +67,22 @@ function siguienteFallback(): AgentReply {
  * Indica si un error es TRANSITORIO (vale la pena reintentar) o permanente.
  * Transitorios: timeout del SDK (AbortError), reset de conexión, 429, 5xx,
  * DNS. Permanentes: 400/401/403, etc.
+ *
+ * EXCEPCIÓN importante: 400 con code "json_validate_failed" SÍ es reintentable.
+ * Ocurre cuando el modelo emite un JSON casi válido (típico: una comilla de
+ * más antes de la coma, tipo {"texto": "...". "emocion": "burlon"}). Como
+ * pedimos response_format json_object, Groq RECHAZA el 400 entero y el turno
+ * terminaba en la frase de emergencia ("Se me fue la señal") aunque el texto
+ * que generó el modelo estaba perfecto. Reintentando, el modelo acierta.
  */
 function esTransitorio(err: any): boolean {
   const name = err?.name ?? "";
   const msg = (err?.message ?? "").toString();
   const code = err?.code ?? "";
   const status = err?.status ?? "";
+  if (code === "json_validate_failed" || /json_validate_failed/.test(msg)) {
+    return true;
+  }
   return (
     name === "AbortError" ||
     /ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|fget|fetch failed|socket hang up|429|5\d\d/.test(
@@ -143,11 +153,62 @@ function extractJSON(raw: string): string {
  * Filtra caracteres de alfabetos no latinos (chino, coreano, árabe, etc.)
  * que a veces se cuelan en respuestas en español.
  */
+// Letras acentuadas que SÍ existen en español y se respetan tal cual:
+// á é í ó ú ü Ñ ¿ ¡. Cualquier OTRO carácter no-ASCII (portugués, francés,
+// cirílico…) se mapea a su equivalente latino, o se borra si no hay equivalente.
+const EQUIVALENTE: Record<string, string> = {
+  // Portugués / francés (los que más se cuelan). OJO: "ã" en portugués es
+  // una "a" nasal, NO una "ñ" — por eso "são" va a "sao", no a "sño".
+  "ã": "a", "â": "a", "ê": "e", "è": "e", "ë": "e",
+  "ô": "o", "õ": "o", "ù": "u", "û": "u", "ï": "i", "ç": "c",
+  "æ": "ae", "œ": "oe", "ß": "ss", "ð": "d", "þ": "th",
+  // Europeos con diacríticos raros
+  "ā": "a", "ă": "a", "ą": "a", "å": "a", "ä": "a", "ǎ": "a",
+  "ć": "c", "č": "c", "ĉ": "c", "ċ": "c",
+  "ď": "d", "đ": "d",
+  "ē": "e", "ĕ": "e", "ė": "e", "ę": "e", "ě": "e", "ə": "e",
+  "ĝ": "g", "ğ": "g", "ġ": "g", "ģ": "g",
+  "ĥ": "h", "ħ": "h",
+  "ĩ": "i", "ī": "i", "ĭ": "i", "į": "i", "ı": "i", "ĳ": "i", "ǐ": "i",
+  "ĵ": "j",
+  "ķ": "k",
+  "ĺ": "l", "ļ": "l", "ľ": "l", "ŀ": "l", "ł": "l",
+  "ń": "n", "ņ": "n", "ň": "n", "ŉ": "n", "ŋ": "n",
+  "ō": "o", "ŏ": "o", "ő": "o", "ø": "o", "ǒ": "o",
+  "ŕ": "r", "ŗ": "r", "ř": "r",
+  "ś": "s", "ŝ": "s", "ş": "s", "š": "s", "ſ": "s", "ș": "s",
+  "ţ": "t", "ť": "t", "ŧ": "t", "ț": "t",
+  "ũ": "u", "ū": "u", "ŭ": "u", "ů": "u", "ű": "u", "ų": "u", "ǔ": "u",
+  "ŵ": "w",
+  "ŷ": "y", "ẏ": "y",
+  "ź": "z", "ż": "z", "ž": "z",
+  // Ligaduras tipográficas
+  "ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl",
+};
+
+/**
+ * Quita alfabetos no latinos y deja el texto en español correcto.
+ * Orden importante: primero los CJK/árabe/etc (que se BORRAN), después los
+ * diacríticos europeos (que se TRADUCEN a su equivalente latino).
+ */
 function sanitizeLanguage(text: string): string {
-  return text
-    .replace(/[\u4e00-\u9fff\u3400-\u4dbf\uac00-\ud7af\u0600-\u06ff\u0590-\u05ff\u0e00-\u0e7f\u3040-\u309f\u30a0-\u30ff\u1100-\u11ff\ua960-\ua97f]/g, "")
-    .replace(/\s{2,}/g, " ")
-    .trim();
+  return (
+    text
+      // Alfabetos que no tienen equivalente latino: se eliminan.
+      .replace(/[\u4e00-\u9fff\u3400-\u4dbf\uac00-\ud7af\u0600-\u06ff\u0590-\u05ff\u0e00-\u0e7f\u3040-\u309f\u30a0-\u30ff\u1100-\u11ff\ua960-\ua97f\uff00-\uffef]/g, "")
+      // Diacrícios europeos: minúscula y mayúscula. OJO: á é í ó ú ü Ñ NO se
+      // tocan (son válidos en español): cambiarlas rompería "café" o "niño".
+      .replace(/[^\u0000-\u007f]/g, (c) => {
+        const bajo = EQUIVALENTE[c.toLowerCase()];
+        if (bajo == null) return c;
+        // Si venía en mayúscula, devolvemos mayúscula.
+        return c === c.toUpperCase() && c !== c.toLowerCase()
+          ? bajo.charAt(0).toUpperCase() + bajo.slice(1)
+          : bajo;
+      })
+      .replace(/\s{2,}/g, " ")
+      .trim()
+  );
 }
 
 export interface ConversationMessage {
@@ -158,6 +219,37 @@ export interface ConversationMessage {
 export interface AgentReply {
   texto: string;
   emocion: "feliz" | "neutral" | "sorprendido" | "burlon" | "pensativo" | "enojado";
+}
+
+// Zona horaria para la fecha/hora que se le pasa a Groq. Render corre en UTC,
+// así que sin esto Ivi respondería con la hora equivocada. Default: Mazatlán
+// (UTC-7 todo el año, sin horario de verano) = Tepic, Nayarit.
+const FECHA_TZ = process.env.FECHA_TZ || "America/Mazatlan";
+
+/**
+ * Fecha y hora REALES del momento, en texto llano para el system prompt.
+ * Se arma en CADA request (no al boot): el server de Render se duerme ~15 min
+ * y una fecha cacheada en memoria quedaría vieja.
+ */
+function contextoAhora(): string {
+  const fmt = new Intl.DateTimeFormat("es-MX", {
+    timeZone: FECHA_TZ,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  const p: Record<string, string> = {};
+  for (const parte of fmt.formatToParts(new Date())) p[parte.type] = parte.value;
+  const hora = `${p.hour}:${p.minute} ${p.dayPeriod ?? ""}`.trim();
+  return (
+    `\n\nAHORA ES: ${p.weekday} ${p.day} de ${p.month} de ${p.year}, ${hora}` +
+    ` (hora de ${FECHA_TZ}). Esta es la fecha y hora reales: si te preguntan qué` +
+    ` día es hoy, qué fecha es o qué hora es, usa EXACTAMENTE estos datos.`
+  );
 }
 
 /**
@@ -174,7 +266,9 @@ export async function generarRespuesta(
   // transitorios (red, 429, 5xx) — nunca nuestro propio timeout ni
   // errores permanentes. Al agotar → frase del pool rotativo (nunca
   // la misma dos veces seguidas).
-  const system = contextoMemo ? SYSTEM_PROMPT + "\n" + contextoMemo : SYSTEM_PROMPT;
+  // La fecha/hora va SIEMPRE (aunque no haya memoria): sin ella Groq se
+  // inventa una ("hoy es martes 21 de mayo de 2024") y después se defiende.
+  const system = SYSTEM_PROMPT + contextoAhora() + (contextoMemo ? "\n" + contextoMemo : "");
   const t0 = Date.now();
   for (let intento = 0; intento <= RETRIES; intento++) {
     // Presupuesto: si un intento más ya no entraría en BUDGET_MS, cortamos

@@ -19,7 +19,7 @@
   .card-head .when{font-size:.78rem;color:#6f7589}
   .msgs{display:flex;flex-direction:column;gap:.5rem}
   .msg{max-width:78%;padding:.55rem .8rem;border-radius:12px;font-size:.9rem;line-height:1.4;white-space:pre-wrap;word-break:break-word}
-  .msg .meta{display:block;font-size:.7rem;color:#8a90a5;margin-top:.3rem;opacity:.85}
+  .msg .meta{display:block;font-size:.7rem;color:#8a90a5;margin:0 0 .3rem;opacity:.85}
   .user{background:#2f9e63;color:#fff;margin-left:auto;border-bottom-right-radius:2px}
   .ivi{background:#3a3d46;color:#e8e8f0;margin-right:auto;border-bottom-left-radius:2px}
   .comodoro{color:#8a90a5;font-style:italic}
@@ -129,11 +129,15 @@ async function cargar() {
       const rolClass = m.rol === "user" ? "user" : "ivi";
       b.className = "msg " + rolClass;
       if (!m.contenido) b.classList.add("comodoro");
-      b.textContent = m.contenido;
+      // Etiqueta ARRIBA del texto: si va abajo, al copiar la conversación se
+      // lee corrida y parece que cada mensaje es de la persona anterior.
       const meta = document.createElement("span");
       meta.className = "meta";
       meta.textContent = m.rol === "user" ? "Tú · " + fechaHora(m.fecha) : "Ivi · " + fechaHora(m.fecha);
-      b.appendChild(meta);
+      const txt = document.createElement("span");
+      txt.className = "txt";
+      txt.textContent = m.contenido;
+      b.append(meta, txt);
       msgs.appendChild(b);
     }
     card.append(head, msgs);

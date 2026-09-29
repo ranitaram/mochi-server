@@ -11,6 +11,35 @@ const BACKOFF_BASE_MS = 600;
 
 const dormir = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * El prompt de Whisper mejora la ortografía del nombre, pero no la garantiza:
+ * igual oye "Vivi"/"Ibi" y salía el típico "no soy Vivi, soy Ivi".
+ *
+ * Este normalizador solo corrige la palabra en posición de VOCATIVO (como te
+ * están llamando): al inicio del mensaje, o tras "hola"/"oye"/"gracias", o
+ * antes de una coma. Es deliberadamente conservador: NO toca "viví", "vivimos",
+ * "vivienda" ni nada dentro de una frase, porque ahí la palabra es real y
+ * cambiarla sería inventar texto.
+ */
+const NOMBRES_EQUIVOCADOS = /^(vivi|iby|ibi|ibí|ivy|vibi|viby|eve|evy)\b/i;
+
+export function normalizarNombreIvi(texto: string): string {
+  if (!texto) return texto;
+  const t = texto.trim();
+
+  // Caso 1: el mensaje EMPIEZA con el nombre equivocado ("Vivi, ¿qué día es?").
+  const inicio = t.match(NOMBRES_EQUIVOCADOS);
+  if (inicio) {
+    return "Ivi" + t.slice(inicio[0].length);
+  }
+
+  // Caso 2: vocativo tras un saludo o agradecimiento ("gracias Ibi por todo").
+  return t.replace(
+    /\b(hola|oye|hey|gracias|buenas|qu[eé] tal|holis|thanks)\b([,!¡.\s]+)(vivi|iby|ibi|ibí|ivy|vibi|viby|eve|evy)\b/gi,
+    (_m, saludo: string, sep: string) => `${saludo}${sep}Ivi`
+  );
+}
+
 function transcribirUnaVez(audioBuffer: Buffer, controller: AbortController): Promise<string> {
   return (async () => {
     const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -39,6 +68,16 @@ function transcribirUnaVez(audioBuffer: Buffer, controller: AbortController): Pr
       parts.push(
         Buffer.from(
           `--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nes\r\n`
+        )
+      );
+
+      // Campo: prompt (sesgo de vocabulario). Whisper solo transcribe y no sabe
+      // que existimos: sin esto "Ivi" salía como "Vivi"/"Ibi" y había que
+      // corregirle el nombre cada rato. El prompt le da el nombre y el contexto.
+      parts.push(
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n` +
+            `Ivi es un robot de escritorio con cara animada. Ramsés le habla a Ivi.\r\n`
         )
       );
 
@@ -83,7 +122,7 @@ export async function transcribirAudio(audioBuffer: Buffer): Promise<string> {
     const controller = new AbortController();
     try {
       const texto = await transcribirUnaVez(audioBuffer, controller);
-      return texto;
+      return normalizarNombreIvi(texto);
     } catch (err: any) {
       if (err.name === "AbortError") {
         console.error(`[STT] timeout después de ${TIMEOUT_MS}ms (intento ${intento})`);
