@@ -196,13 +196,14 @@ function registrarTurno(
     contextoCopilot?: string | null;
     emocion?: string;
     emergency?: boolean;
+    condicion?: "ivi" | "agentes" | "prueba";
   }
 ): void {
   guardarEnHistorial(clave, sesionAnterior, textoUsuario, textoIvi);
   try {
     registrarTurnoExp({
       ts: new Date().toISOString(),
-      condicion: condicionActual(),
+      condicion: extra?.condicion ?? condicionActual(),
       sesion_ivi: clave,
       pregunta: textoUsuario ?? "",
       respuesta: textoIvi ?? "",
@@ -226,6 +227,18 @@ app.get("/health", (_req, res) => {
   res.set("Cache-Control", "no-store");
   res.status(200).send("ok");
 });
+
+/**
+ * Condición del experimento A/B para ESTE turno.
+ *
+ * scripts/preguntar.mjs marca sus POSTs con `x-ivi-prueba` porque el server
+ * corre en otro proceso (Render) y un IVI_CONDICION exportado en mi terminal
+ * no llega ahí. Sin este header, una pregunta de prueba cae en "ivi" por el
+ * default y contamina el log que el experimento está midiendo.
+ */
+function condicionDelTurno(req: express.Request): "ivi" | "agentes" | "prueba" {
+  return req.headers["x-ivi-prueba"] ? "prueba" : condicionActual();
+}
 
 /**
  * energiaAudio: mide la energía real (RMS) de un WAV PCM 16-bit recibido.
@@ -299,7 +312,8 @@ app.post("/api/touch", async (req, res) => {
         claveCliente,
         undefined,
         "(silencio o eco, sin transcripción)",
-        "No te escuché, acerca el micrófono a tu boca y repite."
+        "No te escuché, acerca el micrófono a tu boca y repite.",
+        { condicion: condicionDelTurno(req) }
       );
       return;
     }
@@ -329,7 +343,8 @@ app.post("/api/touch", async (req, res) => {
       "(audio sin transcripción)",
       fallbackStt
         ? "No te escuché bien, repetí lo que me dijiste, porfa."
-        : "(fallo STT sin audio de respaldo)"
+        : "(fallo STT sin audio de respaldo)",
+      { condicion: condicionDelTurno(req) }
     );
     return;
   }
@@ -414,6 +429,17 @@ app.post("/api/touch", async (req, res) => {
       "X-Ivi-Emocion": headerSeguro(respuesta.emocion),
       "X-Ivi-Audio-Length": String(mp3Buffer.length),
     });
+    // Diagnostico SOLO para scripts/preguntar.mjs. En una respuesta rara hay
+    // que separar "el modelo alucino" de "Whisper no entendio lo que dijiste",
+    // y eso solo se ve con la transcripcion y con si entro el contexto. El
+    // ESP32 no manda el header, asi que no recibe nada de esto.
+    if (req.headers["x-ivi-prueba"]) {
+      res.set({
+        "X-Ivi-STT": headerSeguro(textoUsuario),
+        "X-Ivi-Copilot": contextoCopilot ? "si" : "no",
+        "X-Ivi-Contexto-Chars": String(contextoCopilot?.length ?? 0),
+      });
+    }
     res.send(mp3Buffer);
     console.log(`[touch] Respuesta enviada: ${mp3Buffer.length} bytes MP3 (${Date.now() - inicio}ms total)`);
 
@@ -430,6 +456,7 @@ app.post("/api/touch", async (req, res) => {
       contextoCopilot,
       emocion: respuesta.emocion,
       emergency: Boolean(motivoEmergencia),
+      condicion: condicionDelTurno(req),
     });
   } catch (err: any) {
     // Si la respuesta ya se había enviado (o el device colgó antes de los
@@ -444,6 +471,7 @@ app.post("/api/touch", async (req, res) => {
         llmMs,
         contextoCopilot,
         emocion: respuesta.emocion,
+        condicion: condicionDelTurno(req),
       });
       return;
     }
@@ -455,6 +483,7 @@ app.post("/api/touch", async (req, res) => {
       llmMs,
       contextoCopilot,
       emergency: true,
+      condicion: condicionDelTurno(req),
     });
     // SIEMPRE respondemos algo: si no, el ESP32 se queda esperando hasta que
     // su propio timeout de 65s y la request queda colgada en el servidor.

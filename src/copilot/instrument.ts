@@ -18,7 +18,7 @@ const ARCHIVO = path.join(DIR, "turnos.log");
 
 export interface RegistroTurno {
   ts: string;
-  condicion: "ivi" | "agentes";
+  condicion: "ivi" | "agentes" | "prueba";
   sesion_ivi: string;
   pregunta: string;
   respuesta: string;
@@ -38,10 +38,16 @@ export interface RegistroTurno {
 /**
  * El usuario exporta IVI_CONDICION=agentes|ivi para cambiar de día.
  * Si no está definida, todo se registra como "ivi".
+ *
+ * "prueba" existe para las corridas de scripts/preguntar.mjs. Sin esto, una
+ * pregunta de prueba cae en "ivi" por el default y se mezcla con los turnos
+ * reales del experimento A/B, que es exactamente lo que ese log mide.
  */
-export function condicionActual(): "ivi" | "agentes" {
+export function condicionActual(): "ivi" | "agentes" | "prueba" {
   const v = (process.env.IVI_CONDICION ?? "ivi").toLowerCase();
-  return v === "agentes" ? "agentes" : "ivi";
+  if (v === "agentes") return "agentes";
+  if (v === "prueba") return "prueba";
+  return "ivi";
 }
 
 export function registrarTurno(r: RegistroTurno): void {

@@ -71,7 +71,12 @@ export function construirContextoCopilot(
       !Array.isArray(estado.files_changed) ||
       !Array.isArray(estado.failures) ||
       !estado.metrics ||
-      !estado.original_request === undefined
+      // Solo exigimos que haya ALGO de estado. `!x === undefined` era siempre
+      // falso (booleano contra undefined), o sea un chequeo muerto.
+      (estado.original_request === undefined &&
+        estado.last_message === undefined &&
+        estado.files_changed.length === 0 &&
+        estado.last_tool === undefined)
     ) {
       return null;
     }
@@ -142,3 +147,5 @@ export function proyectoCopilot(): string {
 }
 
 export { MAX_AGE_MIN };
+
+// El bloque solo lleva datos observados del copiloto, nunca instrucciones ni órdenes.
