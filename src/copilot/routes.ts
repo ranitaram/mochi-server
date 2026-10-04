@@ -21,6 +21,15 @@ import { validarEstado, MAX_PAYLOAD_BYTES, EstadoCopilot } from "./state";
 import { guardarEstado } from "./store";
 
 const COPILOT_TOKEN = process.env.COPILOT_TOKEN ?? "";
+
+// Allowlist de proyectos. OBLIGATORIA por diseño: si está vacía el endpoint se
+// cierra en vez de aceptar cualquier nombre de proyecto.
+//
+// El caso real que motivó esto: en producción faltaba COPILOT_PROJECTS y el
+// endpoint aceptaba "otro-proyecto" sin problema. Con la allowlist opcional,
+// un deploy mal configurado abre el endpoint a cualquier proyecto que mande
+// el token. Cerrar por defecto es lo correcto para algo que escribe en el
+// contexto de Ivi: que falle el deploy, no la privacidad.
 const PROYECTOS = String(process.env.COPILOT_PROJECTS ?? "")
   .split(",")
   .map((s) => s.trim())
@@ -69,6 +78,10 @@ router.post("/state", async (req: Request, res: Response) => {
     console.warn("[copilot] COPILOT_TOKEN no configurado → endpoint cerrado");
     return res.status(503).json({ error: "Endpoint deshabilitado" });
   }
+  if (PROYECTOS.length === 0) {
+    console.warn("[copilot] COPILOT_PROJECTS vacío → endpoint cerrado");
+    return res.status(503).json({ error: "Endpoint deshabilitado" });
+  }
 
   const token = tokenDe(req);
   if (!tokenValido(token!)) {
@@ -100,8 +113,9 @@ router.post("/state", async (req: Request, res: Response) => {
   }
   const estado: EstadoCopilot = resultado.state;
 
-  // Allowlist: el token es de un proyecto, no de todos.
-  if (PROYECTOS.length > 0 && !PROYECTOS.includes(estado.project)) {
+  // Allowlist: el token es de un proyecto, no de todos. Comparación exacta,
+  // sin normalizar mayúsculas: "MOCHI-SERVER" no es "mochi-server".
+  if (!PROYECTOS.includes(estado.project)) {
     console.warn("[copilot] Proyecto no permitido:", estado.project);
     return res.status(403).json({ error: "Proyecto no permitido" });
   }
