@@ -13,10 +13,18 @@ import path from "path";
 const VOZ = process.env.EDGE_TTS_VOICE || "es-MX-DaliaNeural";
 const PITCH = process.env.TTS_PITCH || "+20Hz";
 const RATE = process.env.TTS_RATE || "1.1";
-// Respuestas largas tardan en sintetizarse, pero el ESP32 aborta el POST a los
-// 65s. Con 12s por intento y UN reintento el peor caso es ~25s: sobra tiempo
-// para el LLM (12s) + STT (2s) y el audio siempre llega al parlante.
-const TIMEOUT_MS = 12_000;
+const num = (v: string | undefined, def: number) => {
+  const n = parseInt(v || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+};
+
+// Tope por intento de síntesis. 8s es el mismo que usa el LLM por request
+// (GROQ_TIMEOUT_MS) y con UN reintento el peor caso es ~16s (8s + 400ms de
+// backoff + 8s). Entra en el deadline de turno de 45s (TURNO_DEADLINE_MS)
+// junto al LLM (12s) y el STT (2s), así el MP3 siempre llega al parlante.
+// OJO: subir esto sin recalcular ese deadline hace que el device corte el POST
+// a los 65s y el turno se pierda entero.
+const TIMEOUT_MS = num(process.env.TTS_TIMEOUT_MS, 8_000);
 const RETRIES = 1;
 const BACKOFF_BASE_MS = 400;
 const CARPETA_TEMP = "./audio-temp";
@@ -93,6 +101,24 @@ export function obtenerFallbackNoAudio(): Buffer | null {
 
 const dormir = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Síntesis HUÉRFANAS. Cuando el timeout gana el race, `tts.toFile` sigue
+// vivo: no hay forma de cancelarlo, así que termina de escribir audio.mp3
+// más tarde. Como msedge-tts SIEMPRE usa ese nombre fijo (ver enSerializar),
+// una huérfana que aterrice durante el reintento puede pisar el archivo — y
+// entonces leeríamos los bytes de OTRO texto y se lo diríamos al niño como si
+// fuera su respuesta. Contamos las que quedan en vuelo y esperamos a que
+// terminen antes de empezar otra síntesis.
+let huerfanasEnVuelo = 0;
+async function esperarHuerfanas(timeoutMs: number): Promise<void> {
+  if (!huerfanasEnVuelo) return;
+  // Tope corto (2s): solo necesitamos que la escritura huérfana aterrice. Si
+  // en 2s no bajó, el intento que viene seguro está fallando y lo cubren el
+  // reintento y el MP3 de emergencia.
+  const limite = Date.now() + Math.min(2_000, timeoutMs);
+  console.warn(`[TTS] esperando ${huerfanasEnVuelo} síntesis(es) huérfana(s)`);
+  while (huerfanasEnVuelo > 0 && Date.now() < limite) await dormir(50);
+}
+
 // Otras voces en español que puedes probar cambiando EDGE_TTS_VOICE en .env:
 // es-MX-DaliaNeural   (femenina, México)
 // es-MX-JorgeNeural   (masculina, México)
@@ -167,6 +193,10 @@ async function sintetizarMP3(
     throw new Error("TTS_FORCE_FAIL (simulación de fallo Edge)");
   }
   return enSerializar(async () => {
+    // Nadie debe sintetizar mientras una huérfana del intento anterior pueda
+    // pisarnos el audio.mp3.
+    await esperarHuerfanas(timeoutMs);
+
     const tts = new MsEdgeTTS();
     await tts.setMetadata(VOZ, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
 
@@ -178,16 +208,39 @@ async function sintetizarMP3(
       textoLimpio,
       { pitch: PITCH, rate: RATE, ...prosody }
     );
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("TTS timeout")), timeoutMs)
-    );
 
-    const { audioFilePath } = await Promise.race([operation, timeout]);
-    // Copiamos el buffer ANTES de borrar: otra síntesis encolada puede
-    // sobrescribir el nombre en cuanto terminamos.
-    const mp3Buffer = fs.readFileSync(audioFilePath);
-    try { fs.unlinkSync(audioFilePath); } catch { /* ignore */ }
-    return mp3Buffer;
+    let ganoTimeout = false;
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        ganoTimeout = true;
+        reject(new Error(`TTS timeout (${timeoutMs}ms)`));
+      }, timeoutMs);
+    });
+
+    try {
+      const { audioFilePath } = await Promise.race([operation, timeout]);
+      // Copiamos el buffer ANTES de borrar: otra síntesis encolada puede
+      // sobrescribir el nombre en cuanto terminamos.
+      const mp3Buffer = fs.readFileSync(audioFilePath);
+      try { fs.unlinkSync(audioFilePath); } catch { /* ignore */ }
+      return mp3Buffer;
+    } finally {
+      // El timer se limpia siempre: si lo dejáramos vivo, cada síntesis
+      // exitosa mantendría el event loop prendido timeoutMs después.
+      if (timer) clearTimeout(timer);
+      if (ganoTimeout) {
+        // La operación perdió el race pero sigue corriendo. La marcamos para
+        // que la próxima síntesis la espere y borramos lo que deje.
+        huerfanasEnVuelo++;
+        void operation
+          .then(({ audioFilePath }) => {
+            try { fs.unlinkSync(audioFilePath); } catch { /* ignore */ }
+          })
+          .catch(() => { /* ya falló sola: no dejó archivo */ })
+          .finally(() => { huerfanasEnVuelo--; });
+      }
+    }
   }, fg);
 }
 
@@ -223,7 +276,12 @@ export async function generarAudioMP3(
     } catch (err: any) {
       ultimoError = err;
       console.error(`[TTS] intento ${intento}/${RETRIES + 1} falló: ${err.message}`);
-      if (intento <= RETRIES) await dormir(BACKOFF_BASE_MS * intento);
+      if (intento <= RETRIES) {
+        const espera = BACKOFF_BASE_MS * intento;
+        // No dormimos si ya no queda tiempo: el backoff se comería el deadline
+        // del turno y el reintento fallaría de antemano sin intentarlo.
+        if (!deadlineMs || deadlineMs - Date.now() > espera) await dormir(espera);
+      }
     }
   }
   console.error("[TTS] sin reintentos — audio de emergencia:", (ultimoError as Error)?.message);
