@@ -72,4 +72,28 @@ services:
         sync: false
       - key: WIFI_ENC_KEY
         sync: false
+      #
+      # --- Copiloto: estado de OpenCode -------------------------------------
+      # POST /api/copilot/state recibe lo que manda el plugin de OpenCode.
+      #
+      # COPILOT_TOKEN es un secreto DISTINTO a propósito. Si compartiera valor
+      # con ADMIN_SECRET, cualquier acceso al panel expondría también la
+      # capacidad de inyectar estado falso a Ivi. Tiene que ser el mismo valor
+      # que IVI_TOKEN en ~/.config/opencode/ivi.env de tu máquina.
+      - key: COPILOT_TOKEN
+        sync: false
+      # Qué proyectos pueden reportar estado. Sin esto, el endpoint acepta
+      # cualquier nombre de proyecto que le manden.
+      - key: COPILOT_PROJECTS
+        value: mochi-server
+      # Cuánto sigue siendo confiable el estado. Pasado esto, Ivi prefiere decir
+      # "no tengo esa info" antes que hablar de algo viejo.
+      - key: COPILOT_MAX_AGE_MIN
+        value: "30"
+      # Tope de peticiones del plugin por minuto. Un plugin descontrolado no
+      # puede hundir el free tier.
+      - key: COPILOT_RATE_MAX
+        value: "60"
+      - key: COPILOT_RATE_MS
+        value: "60000"
       # PORT lo inyecta Render solo; no definirlo acá.

@@ -399,11 +399,17 @@ async function llamarGroq(
 export async function generarRespuesta(
   historial: ConversationMessage[],
   contextoMemo?: string,
-  deadlineMs?: number
+  deadlineMs?: number,
+  contextoCopilot?: string | null
 ): Promise<AgentReply> {
-  // La fecha/hora va SIEMPRE (aunque no haya memoria): sin ella Groq se
-  // inventa una ("hoy es martes 21 de mayo de 2024") y después se defiende.
-  const system = SYSTEM_PROMPT + contextoAhora() + (contextoMemo ? "\n" + contextoMemo : "");
+  // El contexto del copiloto va DESPUÉS de la personalidad y la fecha: si fuera
+  // antes, un texto inyectado en un archivo quedaría más cerca de las
+  // instrucciones del sistema y podría weighs más que la personalidad de Ivi.
+  const system =
+    SYSTEM_PROMPT +
+    contextoAhora() +
+    (contextoMemo ? "\n" + contextoMemo : "") +
+    (contextoCopilot ? contextoCopilot : "");
   const t0 = Date.now();
   const deadline = deadlineMs ?? t0 + BUDGET_MS;
   const modelos = [MODEL, MODEL_FALLBACK].filter((m, i, a) => m && a.indexOf(m) === i);

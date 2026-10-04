@@ -18,6 +18,11 @@ export interface Session {
   // Id de la conversación PERSISTIDA (historial.ts). null hasta que el primer
   // turno de la sesión la abre en Turso.
   id: number | null;
+  // Inicio del turno de voz en curso. Lo usa la instrumentación del
+  // experimento para medir la latencia real (request completa, no solo LLM).
+  // Se pone al entrar a /api/touch y no se limpia al terminar: el siguiente
+  // turno lo sobrescribe.
+  inicioTurno?: number;
 }
 
 const sesiones = new Map<string, Session>();

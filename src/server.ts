@@ -20,6 +20,9 @@ import {
 } from "./llm";
 import { generarAudioMP3, generarAudioMP3Cacheado, precachearFrases, setFallbackAudio, setFallbackNoAudio, obtenerFallbackNoAudio } from "./tts";
 import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
+import { inicializarCopilotDB, obtenerUltimoEstado } from "./copilot/store";
+import { construirContextoCopilot, proyectoCopilot } from "./copilot/contexto";
+import { registrarTurno as registrarTurnoExp, condicionActual } from "./copilot/instrument";
 import {
   inicializarHistorial,
   abrirConversacion,
@@ -27,6 +30,7 @@ import {
   listarHistorial,
 } from "./historial";
 import { deviceRouter } from "./deviceRoutes";
+import { copilotRouter } from "./copilot/routes";
 import { loginAdmin, logoutAdmin, diagnosticoAuth, requireAdmin } from "./auth";
 import {
   obtenerSesion,
@@ -66,6 +70,11 @@ app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] })
 
 // API de dispositivos / redes (Prisma + PostgreSQL)
 app.use(deviceRouter);
+
+// Estado del copiloto: lo manda el plugin de OpenCode. Token propio,
+// independiente del panel admin. Va ANTES del chat para que un payload
+// invalido nunca llegue al LLM.
+app.use("/api/copilot", copilotRouter);
 
 // Historial de conversaciones (admin): últimas 50 conversaciones con sus
 // mensajes, para la web /historial. Solo lectura.
@@ -138,6 +147,7 @@ async function initMemory() {
   try {
     await inicializarDB();
     await inicializarHistorial();
+    await inicializarCopilotDB();
     const hechos = await obtenerHechos();
     if (hechos.length > 0) {
       contextoHechos =
@@ -155,7 +165,7 @@ async function initMemory() {
 // de audio. Si Turso no está, no-op con log — nunca rompe el server. Acepta
 // sesión ya obtenida para reutilizar su conversación; si viene undefined la
 // obtiene sola (turnos que terminan antes del bloque de sesión, ej. eco).
-function registrarTurno(
+function guardarEnHistorial(
   clave: string,
   sesionAnterior: Session | undefined,
   textoUsuario?: string,
@@ -172,6 +182,40 @@ function registrarTurno(
       console.error("[historial] Error guardando turno:", err?.message ?? err);
     }
   })();
+}
+
+// Registro del experimento: pregunta/respuesta/latencia/condición, para poder
+// comparar "Ivi con contexto de OpenCode" contra "Ivi sin nada".
+function registrarTurno(
+  clave: string,
+  sesionAnterior: Session | undefined,
+  textoUsuario?: string,
+  textoIvi?: string,
+  extra?: {
+    llmMs?: number;
+    contextoCopilot?: string | null;
+    emocion?: string;
+    emergency?: boolean;
+  }
+): void {
+  guardarEnHistorial(clave, sesionAnterior, textoUsuario, textoIvi);
+  try {
+    registrarTurnoExp({
+      ts: new Date().toISOString(),
+      condicion: condicionActual(),
+      sesion_ivi: clave,
+      pregunta: textoUsuario ?? "",
+      respuesta: textoIvi ?? "",
+      emocion: extra?.emocion ?? "",
+      latencia_ms: Date.now() - (sesionAnterior?.inicioTurno ?? Date.now()),
+      llm_ms: extra?.llmMs,
+      copilot: Boolean(extra?.contextoCopilot),
+      chars_contexto: extra?.contextoCopilot?.length,
+      emergency: extra?.emergency,
+    });
+  } catch (err: any) {
+    console.warn("[instrument] fallo al registrar:", err?.message ?? err);
+  }
 }
 
 // --- Health check ---
@@ -294,6 +338,9 @@ app.post("/api/touch", async (req, res) => {
   // 2. Sesión de conversación: cada cliente tiene su historial en memoria.
   //    Se abre de cero si pasó SESSION_IDLE_MS (default 15 min) sin hablar.
   const sesion = obtenerSesion(claveCliente);
+  // La instrumentación necesita el inicio del turno para medir la latencia
+  // real de la request completa (no solo la del LLM).
+  sesion.inicioTurno = inicio;
   agregarMensaje(sesion, { role: "user", content: textoUsuario });
   console.log(
     `[touch] Sesión ${claveCliente}: historial de ${sesion.historial.length} mensaje(s)`
@@ -305,8 +352,36 @@ app.post("/api/touch", async (req, res) => {
   //    holgura. Antes el peor caso era 40s de LLM + 78s de TTS = 118s y el
   //    device se iba antes de oír nada.
   const deadline = inicio + DEADLINE_TURNO_MS;
-  const respuesta = await generarRespuesta(sesion.historial, contextoHechos, deadline);
+
+  // 3b. Contexto del copiloto: qué está haciendo OpenCode en la otra pantalla.
+  //     Se lee de libsql, no de memoria: el estado lo manda el plugin de
+  //     OpenCode y esta sesion puede no existir todavia.
+  //     Cualquier falla aqui se come sola. Perder contexto del copiloto NUNCA
+  //     puede tumbar una respuesta de voz.
+  let contextoCopilot: string | null = null;
+  try {
+    const estadoCopilot = await obtenerUltimoEstado(proyectoCopilot());
+    contextoCopilot = construirContextoCopilot(estadoCopilot);
+    if (contextoCopilot) {
+      console.log(
+        `[copilot] contexto inyectado (${contextoCopilot.length} chars) ` +
+          `de la sesion ${estadoCopilot!.session_id.slice(0, 12)}…`
+      );
+    } else {
+      console.log("[copilot] sin contexto usable (sin estado o muy viejo)");
+    }
+  } catch (err: any) {
+    console.warn("[copilot] No se pudo obtener contexto:", err?.message ?? err);
+  }
+
+  const respuesta = await generarRespuesta(
+    sesion.historial,
+    contextoHechos,
+    deadline,
+    contextoCopilot
+  );
   console.log(`[touch] Ivi [${respuesta.emocion}]: ${respuesta.texto} (${Date.now() - inicio}ms)`);
+  const llmMs = Date.now() - inicio;
 
   // 4. Generar audio MP3 y agregar la respuesta al historial SOLO si se
   //    logró producir el audio (si no, el usuario no la oyó y mejor que la
@@ -350,7 +425,12 @@ app.post("/api/touch", async (req, res) => {
       quitarUltimoMensajeUsuario(sesion);
       console.log(`[touch] TTS en emergencia (${motivoEmergencia}): sin audio real para la persona`);
     }
-    registrarTurno(claveCliente, sesion, textoUsuario, textoOido);
+    registrarTurno(claveCliente, sesion, textoUsuario, textoOido, {
+      llmMs,
+      contextoCopilot,
+      emocion: respuesta.emocion,
+      emergency: Boolean(motivoEmergencia),
+    });
   } catch (err: any) {
     // Si la respuesta ya se había enviado (o el device colgó antes de los
     // 65s), el error NO es del TTS: antes se guardaba como "error de audio" y
@@ -360,14 +440,22 @@ app.post("/api/touch", async (req, res) => {
         `[touch] El cliente ya no está (${Date.now() - inicio}ms), el audio llegó tarde: ${err.message}`
       );
       if (!motivoEmergencia) agregarMensaje(sesion, { role: "assistant", content: respuesta.texto });
-      registrarTurno(claveCliente, sesion, textoUsuario, respuesta.texto);
+      registrarTurno(claveCliente, sesion, textoUsuario, respuesta.texto, {
+        llmMs,
+        contextoCopilot,
+        emocion: respuesta.emocion,
+      });
       return;
     }
     console.error("[touch] Error generando audio:", err.message);
     // Ivi no pudo responder: quitar la pregunta del historial para que no
     // quede como "contexto fantasma" que contamine la próxima pregunta.
     quitarUltimoMensajeUsuario(sesion);
-    registrarTurno(claveCliente, sesion, textoUsuario, "(no llegó a hablar: error de audio)");
+    registrarTurno(claveCliente, sesion, textoUsuario, "(no llegó a hablar: error de audio)", {
+      llmMs,
+      contextoCopilot,
+      emergency: true,
+    });
     // SIEMPRE respondemos algo: si no, el ESP32 se queda esperando hasta que
     // su propio timeout de 65s y la request queda colgada en el servidor.
     if (!res.headersSent) {

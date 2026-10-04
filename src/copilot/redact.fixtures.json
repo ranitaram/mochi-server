@@ -1,0 +1,142 @@
+{
+  "_nota": "Fuente UNICA de casos de prueba del redactor. La consumen las dos implementaciones (src/copilot/redact.ts y ~/.config/opencode/plugins/ivi-redact.js) para que no diverjan. No editar casos sin actualizar ambas.",
+  "version": 1,
+  "cases": [
+    {
+      "name": "groq gsk_ clave suelta",
+      "input": "la clave es gsk_ABCdef123GHIjkl456MNOpqr789STUvw012xyzABCDE",
+      "expect": "la clave es [REDACTED]"
+    },
+    {
+      "name": "groq gsk_ dentro de comando",
+      "input": "curl -H \"Authorization: Bearer gsk_ABCdef123GHIjkl456MNOpqr789STUvw012xyzABCDE\" https://api.groq.com",
+      "expect": "curl -H \"Authorization: Bearer [REDACTED]\" https://api.groq.com"
+    },
+    {
+      "name": "groq gsk_ truncado en la cola (escape por corte)",
+      "input": "prefijo gsk_ABCdef123GHIjkl456MNOPqr789STUvw012xyzABCDEF",
+      "expect": "prefijo [REDACTED]"
+    },
+    {
+      "name": "URL con usuario y clave",
+      "input": "DATABASE_URL=postgres://admin:s3cr3tP4ss@db.internal:5432/app",
+      "expect": "DATABASE_URL=postgres://[REDACTED]@db.internal:5432/app"
+    },
+    {
+      "name": "URL con credenciales sin puerto",
+      "input": "conectando a mysql://root:letmein@localhost/base",
+      "expect": "conectando a mysql://[REDACTED]@localhost/base"
+    },
+    {
+      "name": "NOMBRE=valor con API_KEY",
+      "input": "API_KEY=ABC123XYZ789",
+      "expect": "API_KEY=[REDACTED]"
+    },
+    {
+      "name": "NOMBRE=valor con MY_SECRET_TOKEN",
+      "input": "MY_SECRET_TOKEN=abc.def.ghi",
+      "expect": "MY_SECRET_TOKEN=[REDACTED]"
+    },
+    {
+      "name": "NOMBRE=valor con DB_PASSWORD entre espacios",
+      "input": "DB_PASSWORD = hunter2delgato",
+      "expect": "DB_PASSWORD=[REDACTED]"
+    },
+    {
+      "name": "NOMBRE=valor en minusculas",
+      "input": "db_password=hunter2",
+      "expect": "db_password=[REDACTED]"
+    },
+    {
+      "name": "MONKEY se sobre-redacta (sobre-match documentado)",
+      "input": "MONKEY=banana",
+      "expect": "MONKEY=[REDACTED]"
+    },
+    {
+      "name": "clave OpenAI sk-",
+      "input": "OPENAI_API_KEY=sk-abcdefghij0123456789ABCDEFGHIJ",
+      "expect": "OPENAI_API_KEY=[REDACTED]"
+    },
+    {
+      "name": "PAT de GitHub ghp_",
+      "input": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+      "expect": "[REDACTED]"
+    },
+    {
+      "name": "AWS access key AKIA",
+      "input": "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE",
+      "expect": "AWS_ACCESS_KEY_ID=[REDACTED]"
+    },
+    {
+      "name": "Bearer token",
+      "input": "Authorization: Bearer ya29.a0AfH6SMBx1234567890abcdefghijkl",
+      "expect": "Authorization: Bearer [REDACTED]"
+    },
+    {
+      "name": "JWT (RFC 7519)",
+      "input": "el token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c es de prueba",
+      "expect": "el token [REDACTED] es de prueba"
+    },
+    {
+      "name": "varios secretos en un mismo bloque",
+      "input": "API_KEY=k1\nDB_PASSWORD=p1\ngsk_ABCdef123GHIjkl456MNOpqr789STUvw012xyzABCDE\nfin",
+      "expect": "API_KEY=[REDACTED]\nDB_PASSWORD=[REDACTED]\n[REDACTED]\nfin"
+    },
+    {
+      "name": "sin secretos (debe quedar igual)",
+      "input": "npm run build\nbuild ok\n0 errores",
+      "expect": "npm run build\nbuild ok\n0 errores"
+    },
+    {
+      "name": "texto vacio",
+      "input": "",
+      "expect": ""
+    },
+    {
+      "name": "menciones de .env sin valor",
+      "input": "no se pudo leer el archivo .env del proyecto",
+      "expect": "no se pudo leer el archivo .env del proyecto"
+    }
+  ],
+  "tail_cases": [
+    {
+      "name": "tail corta por arriba",
+      "input": "linea1\nlinea2\nERROR boom\nlinea4\nlinea5",
+      "lines": 2,
+      "expect": "linea4\nlinea5"
+    },
+    {
+      "name": "tail de un comando fallido con secreto en la ultima linea",
+      "input": "npm WARNdeprecated\nnpm ERR! code E401\nfallo con KEY=abc123secreto",
+      "lines": 2,
+      "expect": "npm ERR! code E401\nfallo con KEY=[REDACTED]"
+    },
+    {
+      "name": "tail de 3 lineas",
+      "input": "linea1\nlinea2\nERROR boom\nlinea4\nlinea5",
+      "lines": 3,
+      "expect": "ERROR boom\nlinea4\nlinea5"
+    }
+  ],
+  "char_cases": [
+    {
+      "name": "corte por caracteres: la clave cae incompleta si se trunca antes de redactar",
+      "input": "prefijo largo gsk_ABCdef123GHIjkl456MNOpqr789STUvw012xyzABCDE sufijo",
+      "max_chars": 40,
+      "expect": "prefijo largo [REDACTED] sufijo",
+      "_nota": "Con 40 chars el corte cae DENTRO de la clave. Si se trunca primero, el fragmento remanente (ABCDEFGHIJ...) ya no hace match con gsk_[A-Za-z0-9]{20,} y se escapa. Por eso el orden es redactar ANTES de truncar."
+    },
+    {
+      "name": "corte por caracteres sin secretos",
+      "input": "linea de salida normal sin nada que ocultar en absoluto",
+      "max_chars": 20,
+      "expect": "linea de salida norm"
+    }
+  ],
+  "idempotence_cases": [
+    {
+      "name": "redact(redact(x)) == redact(x)",
+      "input": "API_KEY=abc123 y gsk_ABCdef123GHIjkl456MNOpqr789STUvw012xyzABCDE"
+    }
+  ]
+}

@@ -18,7 +18,11 @@
     "crear-device": "ts-node scripts/crear-device.ts",
     "test-api": "ts-node scripts/test-api.ts",
     "generar-muletillas": "ts-node scripts/generar-muletillas.ts",
-    "generar-fallback-audio": "ts-node scripts/generar-fallback-audio.ts"
+    "generar-fallback-audio": "ts-node scripts/generar-fallback-audio.ts",
+    "test": "node scripts/test-redactor.mjs && node scripts/test-state.mjs && node scripts/test-contexto.mjs",
+    "test:redactor": "node scripts/test-redactor.mjs",
+    "test:state": "node scripts/test-state.mjs",
+    "test:contexto": "node scripts/test-contexto.mjs"
   },
   "dependencies": {
     "@libsql/client": "^0.17.4",
