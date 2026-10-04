@@ -26,7 +26,16 @@ function antiguedadHumana(iso: string): string {
   if (h < 0.001) return "hace unos segundos";
   if (h < 1 / 60) return `hace ${Math.max(1, Math.round(h * 3600))} segundos`;
   if (h < 1) return `hace ${Math.round(h * 60)} minutos`;
-  if (h < 24) return `hace ${Math.round(h)} hora${h < 2 ? "" : "s"}`;
+  if (h < 24) {
+    // Math.round redondeaba: 150 min se imprimia "hace 3 horas" cuando son
+    // 2 y media, y Ivi repetia un numero que no era el del bloque.
+    const enteras = Math.floor(h);
+    const medias = h - enteras >= 0.5;
+    if (medias) {
+      return `hace ${enteras} hora${enteras === 1 ? "" : "s"} y media`;
+    }
+    return `hace ${enteras} hora${enteras === 1 ? "" : "s"}`;
+  }
   return `hace ${Math.round(h / 24)} días`;
 }
 

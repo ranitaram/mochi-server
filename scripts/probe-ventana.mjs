@@ -46,7 +46,7 @@ async function preguntar() {
   return { chars: Number(res.headers.get("x-ivi-contexto-chars") ?? -1), texto: res.headers.get("x-ivi-texto") ?? "" };
 }
 
-for (const min of [25, 31, 35, 45]) {
+for (const min of [100, 170, 185, 200]) {
   await poner(min);
   const r = await preguntar();
   const entro = r.chars > 0;
