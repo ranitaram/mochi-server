@@ -22,6 +22,8 @@ export const MARCA = "[REDACTED]";
 // El nombre se conserva (ver "API_KEY=[REDACTED]") porque saber QUE se\Configuro
 // un secreto le sirve a Ivi; lo que no puede viajar es el valor.
 
+// El orden importa porque los tests comparan esta implementacion con la del plugin
+// contra los mismos fixtures: cualquier reordenamiento cambia la salida y falla.
 const REGLAS: Array<[string, RegExp, string]> = [
   // 1. NOMBRE=valor cuyo nombre contenga KEY, SECRET, TOKEN o PASSWORD.
   //    El valor se detiene en el primer espacio: "error: KEY=abc rejected" queda

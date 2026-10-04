@@ -2,7 +2,7 @@
 //
 // ESTO ES EL ÚNICO PUNTO donde el estado de OpenCode toca a Ivi. Reglas:
 //   - El estado ya viene redactado (plugin + backend), aquí no se re-redacta.
-//   - Se inyecta SOLO si es reciente (COPILOT_MAX_AGE_MIN, default 30 min).
+//   - Se inyecta SOLO si es reciente (COPILOT_MAX_AGE_MIN, default 180 min).
 //     Preguntar "¿qué hacías?" sobre algo de hace 3 horas es peor que no saber.
 //   - Es un BLOQUE DE DATOS delimitado, con instrucciones explícitas de no
 //     tratarlo como una orden. Sin esto, un prompt inyectado en un archivo
@@ -11,7 +11,7 @@
 
 import { cegarDelimitadores, type EstadoCopilot } from "./state";
 
-const MAX_AGE_MIN = Number(process.env.COPILOT_MAX_AGE_MIN ?? 30);
+const MAX_AGE_MIN = Number(process.env.COPILOT_MAX_AGE_MIN ?? 180);
 const PROYECTO = process.env.COPILOT_PROJECTS?.split(",")[0]?.trim() || "mochi-server";
 
 function horasDesde(iso: string): number | null {

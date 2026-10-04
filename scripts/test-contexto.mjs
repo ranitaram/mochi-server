@@ -47,8 +47,14 @@ ok("sin estado → null", construirContextoCopilot(null) === null);
 ok("estado vacío igual → devuelve bloque", construirContextoCopilot(estado()) !== null);
 
 {
-  const viejo = new Date(Date.now() - 3 * 3600_000).toISOString();
-  ok("estado de hace 3 h → null (fuera de ventana)", construirContextoCopilot(estado({ observed_at: viejo })) === null);
+  // La ventana es de 180 min, así que 3 h todavía entra. Este test fijaba el
+  // borde cuando el default era 30 min y ya no comprobaba nada.
+  const casi = new Date(Date.now() - 170 * 60_000).toISOString();
+  ok("estado de hace 170 min → sigue dentro de la ventana", construirContextoCopilot(estado({ observed_at: casi })) !== null);
+}
+{
+  const viejo = new Date(Date.now() - 181 * 60_000).toISOString();
+  ok("estado de hace 181 min → null (fuera de ventana)", construirContextoCopilot(estado({ observed_at: viejo })) === null);
 }
 {
   const roto = "no-es-una-fecha";

@@ -88,8 +88,12 @@ services:
         value: mochi-server
       # Cuánto sigue siendo confiable el estado. Pasado esto, Ivi prefiere decir
       # "no tengo esa info" antes que hablar de algo viejo.
-      - key: COPILOT_MAX_AGE_MIN
-        value: "30"
+# Cuánto sigue siendo confiable el estado. Con 30 min se perdía el
+        # contexto en un café; 3 horas aguanta una sesión de trabajo entera.
+        # Pasado esto, Ivi prefiere decir "no tengo esa info" antes que hablar
+        # de algo viejo.
+        - key: COPILOT_MAX_AGE_MIN
+          value: "180"
       # Tope de peticiones del plugin por minuto. Un plugin descontrolado no
       # puede hundir el free tier.
       - key: COPILOT_RATE_MAX

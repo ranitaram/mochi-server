@@ -51,7 +51,9 @@ const args = process.argv.slice(2).filter((a) => a !== "--lote" && a !== "--sin-
 const archivoLote = args.find((a) => fs.existsSync(a));
 const preguntas = archivoLote
   ? fs.readFileSync(archivoLote, "utf8").split("\n").map((s) => s.trim()).filter(Boolean)
-  : args.filter((a) => !fs.existsSync(a));
+  : LOTE
+    ? PREGUNTAS_LOTE
+    : args.filter((a) => !fs.existsSync(a));
 
 if (preguntas.length === 0) {
   console.error('Uso: node scripts/preguntar.mjs "¿Qué estabas haciendo?"');

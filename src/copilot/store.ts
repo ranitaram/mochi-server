@@ -81,7 +81,7 @@ export async function guardarEstado(estado: EstadoCopilot): Promise<boolean> {
 
 export async function obtenerUltimoEstado(
   project: string,
-  maxAgeMin = 30
+  maxAgeMin = 180
 ): Promise<EstadoCopilot | null> {
   if (deshabilitado("obtenerUltimoEstado")) return null;
   try {
