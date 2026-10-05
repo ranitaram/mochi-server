@@ -82,18 +82,30 @@ services:
       # que IVI_TOKEN en ~/.config/opencode/ivi.env de tu máquina.
       - key: COPILOT_TOKEN
         sync: false
-      # Qué proyectos pueden reportar estado. Sin esto, el endpoint acepta
-      # cualquier nombre de proyecto que le manden.
+      # Qué proyectos pueden reportar estado, separados por coma. El nombre es
+      # el basename del directorio del proyecto (lo que OpenCode pasa como
+      # `directory`).
+      #
+      # Sin esta variable el endpoint NO acepta nada: se cierra con 503. Antes
+      # de eso, si faltaba, caía a "cualquier proyecto es válido", y eso
+      # dejaba la puerta abierta para cualquiera con el token.
+      #
+      # OJO: para dar de alta un proyecto hay que cambiarla TAMBIÉN en
+      # ~/.config/opencode/ivi.env (IVI_PROJECTS). Si solo la cambias aquí, el
+      # plugin de tu máquina sigue sin publicar nada.
       - key: COPILOT_PROJECTS
         value: mochi-server
-      # Cuánto sigue siendo confiable el estado. Pasado esto, Ivi prefiere decir
-      # "no tengo esa info" antes que hablar de algo viejo.
-# Cuánto sigue siendo confiable el estado. Con 30 min se perdía el
-        # contexto en un café; 3 horas aguanta una sesión de trabajo entera.
-        # Pasado esto, Ivi prefiere decir "no tengo esa info" antes que hablar
-        # de algo viejo.
-        - key: COPILOT_MAX_AGE_MIN
-          value: "180"
+      # Cuánto sigue siendo confiable el estado. Con 30 min se perdía el
+      # contexto en un café; 3 horas aguanta una sesión de trabajo entera.
+      # Pasado esto, Ivi prefiere decir "no tengo esa info" antes que hablar de
+      # algo viejo.
+      #
+      # Subirlo NO da más memoria: el estado es un snapshot de la última
+      # sesión (se lee UNA fila), así que solo haría elegible un dato más
+      # viejo, y el aviso de antigüedad es una regla que el modelo no siempre
+      # aplica. Ver "Por qué la ventana son 180 min" en README.md.
+      - key: COPILOT_MAX_AGE_MIN
+        value: "180"
       # Tope de peticiones del plugin por minuto. Un plugin descontrolado no
       # puede hundir el free tier.
       - key: COPILOT_RATE_MAX
