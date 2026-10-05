@@ -222,11 +222,69 @@ emoción, latencia y si entró contexto.
 **Antes de una tanda larga, refresca el estado:**
 
 ```bash
-node scripts/leer-contexto.mjs    # dice VIVO o VIEJO
+node scripts/leer-contexto.mjs --todos   # qué proyectos tienen estado y de cuándo
+node scripts/leer-contexto.mjs           # el más reciente, como lo vería Ivi
+node scripts/leer-contexto.mjs mi-proyecto
 ```
 
 La ventana es de 180 min. Si venció, Ivi responde con su personalidad pero **sin
 contexto**: "no tengo esa info" a todo, y es diseño, no bug.
+
+#### Varios proyectos a la vez
+
+Ivi acompaña el proyecto en el que estás trabajando **sin que le digas cuál**: usa
+el estado más reciente de los proyectos que estén en la allowlist. No hay que
+elegir nada, solo abre el proyecto en OpenCode y empieza a trabajar.
+
+El nombre del proyecto es el `basename` del directorio, el mismo que OpenCode
+pasa como `directory`. Para dar de alta uno nuevo hay que cambiar **dos** lugares,
+porque son dos puertas distintas:
+
+```bash
+# 1. tu máquina: habilita el plugin en ese directorio
+IVI_PROJECTS=mochi-server,mi-proyecto          # ~/.config/opencode/ivi.env
+
+# 2. Render: autoriza que ese proyecto escriba estado (reinicia el servicio)
+COPILOT_PROJECTS=mochi-server,mi-proyecto
+```
+
+**El orden importa y los dos son obligatorios.** Si solo cambias `COPILOT_PROJECTS`,
+el plugin de tu máquina sigue sin publicar nada. Si solo cambias `IVI_PROJECTS`, el
+servidor rechaza el estado con 403. En los dos casos Ivi se queda muda y el
+síntoma es idéntico, así que si no responde de golpe, revisa primero esto:
+
+```bash
+node scripts/leer-contexto.mjs --todos
+```
+
+Sale un proyecto marcado `sin estado` → casi siempre es que falta su nombre en
+`IVI_PROJECTS`. El plugin también lo anota en su log (`plugin.log`), pero solo
+desde el arreglo del silencio: antes no dejaba ni una línea cuando un proyecto no
+estaba permitido, que es indistinguible de "el plugin está roto".
+
+Ojo con las colisiones de nombre: si tienes `/trabajo/api` y `/personal/api`, los
+dos se llaman `api` y su estado se mezcla. La allowlist no distingue directorios,
+solo nombres.
+
+Sin lista explícita no hay comodín: no se puede poner `*`. El plugin limita por
+proyecto, y el endpoint además se cierra con 503 si no hay ninguna variable. Si el
+token se filtra, el daño se limita a los proyectos de la lista.
+
+#### Por qué la ventana son 180 min
+
+Porque el estado es una **foto**, no un historial. `copilot_state` guarda una fila
+por proyecto y sesión, sobrescrita en cada cambio, y al contextualizar se lee
+**una sola**: la más reciente dentro de la ventana.
+
+Eso tiene una consecuencia que no es obvia: subir el número no da más memoria.
+Con 24 horas, lo único que cambia es que un dato de hace 23 horas vuelve a ser
+"válido", y si preguntas por él Ivi responde con confianza sobre algo viejo. El
+aviso de antigüedad ("eso fue hace 3 horas") depende de que el modelo decida
+mencionarlo, y a veces no lo hace.
+
+Si quieres memoria real de 8 o 16 horas no es subir este número: es guardar un
+resumen por sesión y leer varios, que es otro trabajo. Para una sesión de trabajo
+con pausas para el café, 180 min es el punto donde el contexto todavía es del día.
 
 ### Tests
 
@@ -242,8 +300,14 @@ Sondas de diagnóstico:
 ```bash
 node scripts/probe-ventana.mjs   # mide la ventana REAL de producción
 node scripts/probe-edad.mjs      # comprueba si Ivi nombra la antigüedad
+node scripts/probe-multiproyecto.mjs  # que gana el proyecto más reciente
 node scripts/gate-cinco-turnos.mjs  # 7 turnos contra Groq real, sin gastar TTS
 ```
+
+`probe-ventana` y `probe-multiproyecto` escriben en la DB real de Turso, y limpian
+sus filas al terminar (`probe-multiproyecto` solo toca filas `zz-probe-*`, nunca
+las de proyectos reales). Antes de correrlos, no uses OpenCode en otro proyecto:
+su fila real podría quedar como "la más reciente" y falsear el resultado.
 
 ---
 
