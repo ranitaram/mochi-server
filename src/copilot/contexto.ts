@@ -12,7 +12,6 @@
 import { cegarDelimitadores, type EstadoCopilot } from "./state";
 
 const MAX_AGE_MIN = Number(process.env.COPILOT_MAX_AGE_MIN ?? 180);
-const PROYECTO = process.env.COPILOT_PROJECTS?.split(",")[0]?.trim() || "mochi-server";
 
 function horasDesde(iso: string): number | null {
   const t = Date.parse(iso);
@@ -150,9 +149,27 @@ lineas.push(
   }
 }
 
-/** Proyecto para el que se consulta el estado. */
+/**
+ * Proyectos que el copiloto puede leer, en el orden de la allowlist.
+ *
+ * El parseo es el MISMO que hace routes.ts, a propósito: si divergieran, el
+ * endpoint aceptaría un proyecto que el server no lee, o al revés, y el
+ * síntoma sería "mi plugin manda datos y Ivi no los ve".
+ */
+export function proyectosCopilot(): string[] {
+  return (process.env.COPILOT_PROJECTS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Primer proyecto de la allowlist. Solo para scripts que quieren uno fijo
+ * (sondas, gate de turnos). El server usa proyectosCopilot(), que devuelve
+ * todos, porque si no solo leería el primero de la lista.
+ */
 export function proyectoCopilot(): string {
-  return PROYECTO;
+  return proyectosCopilot()[0] || "mochi-server";
 }
 
 export { MAX_AGE_MIN };

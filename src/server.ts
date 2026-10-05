@@ -20,8 +20,8 @@ import {
 } from "./llm";
 import { generarAudioMP3, generarAudioMP3Cacheado, precachearFrases, setFallbackAudio, setFallbackNoAudio, obtenerFallbackNoAudio } from "./tts";
 import { inicializarDB, obtenerHechos, guardarHecho } from "./memoria";
-import { inicializarCopilotDB, obtenerUltimoEstado } from "./copilot/store";
-import { construirContextoCopilot, proyectoCopilot } from "./copilot/contexto";
+import { inicializarCopilotDB, obtenerUltimoEstadoDe } from "./copilot/store";
+import { construirContextoCopilot, proyectosCopilot } from "./copilot/contexto";
 import { registrarTurno as registrarTurnoExp, condicionActual } from "./copilot/instrument";
 import {
   inicializarHistorial,
@@ -375,7 +375,7 @@ app.post("/api/touch", async (req, res) => {
   //     puede tumbar una respuesta de voz.
   let contextoCopilot: string | null = null;
   try {
-    const estadoCopilot = await obtenerUltimoEstado(proyectoCopilot());
+    const estadoCopilot = await obtenerUltimoEstadoDe(proyectosCopilot());
     contextoCopilot = construirContextoCopilot(estadoCopilot);
     if (contextoCopilot) {
       console.log(
