@@ -18,13 +18,12 @@ const num = (v: string | undefined, def: number) => {
   return Number.isFinite(n) && n > 0 ? n : def;
 };
 
-// Tope por intento de síntesis. 8s es el mismo que usa el LLM por request
-// (GROQ_TIMEOUT_MS) y con UN reintento el peor caso es ~16s (8s + 400ms de
-// backoff + 8s). Entra en el deadline de turno de 45s (TURNO_DEADLINE_MS)
-// junto al LLM (12s) y el STT (2s), así el MP3 siempre llega al parlante.
+// Tope por intento de síntesis. Usa 6s por defecto (configurable con TTS_TIMEOUT_MS)
+// (GROQ_TIMEOUT_MS) y con UN reintento el peor caso es ~12.4s (6s + 400ms de backoff + 6s). Entra en el deadline de turno de 45s (TURNO_DEADLINE_MS)
+// junto al LLM (12s) y el STT (2s), deja margen adicional frente al deadline de 45s.
 // OJO: subir esto sin recalcular ese deadline hace que el device corte el POST
 // a los 65s y el turno se pierda entero.
-const TIMEOUT_MS = num(process.env.TTS_TIMEOUT_MS, 8_000);
+const TIMEOUT_MS = num(process.env.TTS_TIMEOUT_MS, 6_000);
 const RETRIES = 1;
 const BACKOFF_BASE_MS = 400;
 const CARPETA_TEMP = "./audio-temp";
@@ -40,6 +39,15 @@ let fallbackNoAudio: Buffer | null = null; // STT no transcribió nada
 // responder 500 y dejar a Ivi muda, reusamos este audio ya sintético. Es la
 // red de seguridad que evita los turnos "(no llegó a hablar: error de audio)".
 let ultimoMp3Valido: Buffer | null = null;
+
+
+// Circuit breaker para Edge TTS: cuando falla varias veces seguidas evitamos
+// martillear el endpoint (403/rate-limit) y respondemos con emergencia al instante.
+let fallosConsecutivosEdge = 0;
+let edgeBloqueadoHasta = 0;
+const UMBRAL_FALLOS_EDGE = 3;
+const COOLDOWN_EDGE_MS = 30_000;
+
 
 // MP3 ya sintetizados por texto. Al arrancar calentamos las frases de
 // emergencia: son las que más se repiten cuando Groq no tiene cuota, y tenerlas
@@ -259,23 +267,42 @@ export async function generarAudioMP3(
   onFallback?: (motivo: string) => void,
   deadlineMs?: number
 ): Promise<Buffer> {
+  // Circuit breaker: si Edge falló muchas veces seguidas, saltamos directo a emergencia
+  const ahora = Date.now();
+  if (edgeBloqueadoHasta > ahora) {
+    const motivoCb = "Edge TTS en cooldown por fallos consecutivos";
+    console.warn(`[TTS] circuito abierto hasta ${new Date(edgeBloqueadoHasta).toISOString()} → emergencia`);
+    const mc = motivoCb.length > 120 ? motivoCb.slice(0, 117) + "..." : motivoCb;
+    if (fallbackAudio) {
+      onFallback?.(`Edge TTS caído: ${mc}`);
+      return fallbackAudio;
+    }
+    if (ultimoMp3Valido) {
+      onFallback?.(`Edge TTS caído: ${mc} (último MP3 válido)`);
+      return ultimoMp3Valido;
+    }
+    throw new Error(motivoCb);
+  }
   let ultimoError: unknown = null;
   for (let intento = 1; intento <= RETRIES + 1; intento++) {
     const restante = deadlineMs ? deadlineMs - Date.now() : TIMEOUT_MS;
     if (restante <= 0) {
-      ultimoError = new Error("TTS: sin tiempo restante antes del deadline del turno");
+      const motivoSinTiempo = "TTS: sin tiempo restante antes del deadline del turno";
+      ultimoError = new Error(motivoSinTiempo);
       break;
     }
     try {
       const buf = await sintetizarMP3(texto, prosody, Math.min(TIMEOUT_MS, restante));
       ultimoMp3Valido = buf;
+      fallosConsecutivosEdge = 0;
+      edgeBloqueadoHasta = 0;
       console.log(
         `[TTS] ok intento ${intento}/${RETRIES + 1}: ${texto.length} chars, ${buf.length} bytes`
       );
       return buf;
     } catch (err: any) {
       ultimoError = err;
-      console.error(`[TTS] intento ${intento}/${RETRIES + 1} falló: ${err.message}`);
+      console.error(`[TTS] intento ${intento}/${RETRIES + 1} falló: ${err.message || String(err)}`);
       if (intento <= RETRIES) {
         const espera = BACKOFF_BASE_MS * intento;
         // No dormimos si ya no queda tiempo: el backoff se comería el deadline
@@ -284,17 +311,25 @@ export async function generarAudioMP3(
       }
     }
   }
-  console.error("[TTS] sin reintentos — audio de emergencia:", (ultimoError as Error)?.message);
+  const motivoUltimo = ultimoError instanceof Error ? ultimoError.message : String(ultimoError ?? "error desconocido");
+  console.error("[TTS] sin reintentos — audio de emergencia:", motivoUltimo);
+  // Actualizar circuit breaker: cada fallo consecutivo cuenta
+  fallosConsecutivosEdge++;
+  if (fallosConsecutivosEdge >= UMBRAL_FALLOS_EDGE) {
+    edgeBloqueadoHasta = Date.now() + COOLDOWN_EDGE_MS;
+    console.warn(`[TTS] circuit breaker ACTIVADO (${fallosConsecutivosEdge} fallos). Bloqueado hasta ${new Date(edgeBloqueadoHasta).toISOString()}`);
+  }
   // Cascada de emergencia: preferimos el MP3 cacheado de los assets; si no
   // cargó al boot, reusamos el último MP3 bueno; solo si no hay NADA se tira.
+  const motivoBase = motivoUltimo.length > 120 ? motivoUltimo.slice(0, 117) + "..." : motivoUltimo;
   if (fallbackAudio) {
     console.log("[TTS] -> MP3 de emergencia de assets");
-    onFallback?.("Edge TTS caído: MP3 de emergencia de assets");
+    onFallback?.(`Edge TTS caído: ${motivoBase}`);
     return fallbackAudio;
   }
   if (ultimoMp3Valido) {
     console.log("[TTS] -> último MP3 válido cacheado");
-    onFallback?.("Edge TTS caído: último MP3 válido");
+    onFallback?.(`Edge TTS caído: ${motivoBase} (último MP3 válido)`);
     return ultimoMp3Valido;
   }
   throw ultimoError as Error;

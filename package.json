@@ -16,10 +16,11 @@
     "db:deploy": "prisma migrate deploy",
     "db:push": "prisma db push",
     "crear-device": "ts-node scripts/crear-device.ts",
+    "test:tts": "node scripts/test-tts.mjs",
     "test-api": "ts-node scripts/test-api.ts",
     "generar-muletillas": "ts-node scripts/generar-muletillas.ts",
     "generar-fallback-audio": "ts-node scripts/generar-fallback-audio.ts",
-    "test": "node scripts/test-redactor.mjs && node scripts/test-state.mjs && node scripts/test-contexto.mjs",
+    "test": "node scripts/test-redactor.mjs && node scripts/test-state.mjs && node scripts/test-contexto.mjs && node scripts/test-tts.mjs",
     "test:redactor": "node scripts/test-redactor.mjs",
     "test:state": "node scripts/test-state.mjs",
     "test:contexto": "node scripts/test-contexto.mjs"
