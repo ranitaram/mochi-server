@@ -206,27 +206,28 @@ async function sintetizarMP3(
     await esperarHuerfanas(timeoutMs);
 
     const tts = new MsEdgeTTS();
-    await tts.setMetadata(VOZ, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-
-    const textoLimpio = sanitizeForTTS(texto);
-    fs.mkdirSync(CARPETA_TEMP, { recursive: true });
-
-    const operation = tts.toFile(
-      CARPETA_TEMP,
-      textoLimpio,
-      { pitch: PITCH, rate: RATE, ...prosody }
-    );
-
     let ganoTimeout = false;
     let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        ganoTimeout = true;
-        reject(new Error(`TTS timeout (${timeoutMs}ms)`));
-      }, timeoutMs);
-    });
-
+    let operation: Promise<{ audioFilePath: string; metadataFilePath: string | null }> | undefined;
     try {
+      await tts.setMetadata(VOZ, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+
+      const textoLimpio = sanitizeForTTS(texto);
+      fs.mkdirSync(CARPETA_TEMP, { recursive: true });
+
+      operation = tts.toFile(
+        CARPETA_TEMP,
+        textoLimpio,
+        { pitch: PITCH, rate: RATE, ...prosody }
+      );
+
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          ganoTimeout = true;
+          reject(new Error(`TTS timeout (${timeoutMs}ms)`));
+        }, timeoutMs);
+      });
+
       const { audioFilePath } = await Promise.race([operation, timeout]);
       // Copiamos el buffer ANTES de borrar: otra síntesis encolada puede
       // sobrescribir el nombre en cuanto terminamos.
@@ -234,12 +235,18 @@ async function sintetizarMP3(
       try { fs.unlinkSync(audioFilePath); } catch { /* ignore */ }
       return mp3Buffer;
     } finally {
+      // Cerramos SIEMPRE el WebSocket de esta instancia: `toFile` NO lo cierra
+      // solo, y creamos un `new MsEdgeTTS()` por síntesis. Sin esto cada turno
+      // deja un socket abierto (fuga de FDs en el server de larga vida). Si
+      // ganó el timeout, además cancela la síntesis huérfana en el acto.
+      try { tts.close(); } catch { /* ignore */ }
       // El timer se limpia siempre: si lo dejáramos vivo, cada síntesis
       // exitosa mantendría el event loop prendido timeoutMs después.
       if (timer) clearTimeout(timer);
-      if (ganoTimeout) {
-        // La operación perdió el race pero sigue corriendo. La marcamos para
-        // que la próxima síntesis la espere y borramos lo que deje.
+      if (ganoTimeout && operation) {
+        // La operación perdió el race: `close()` la cancela. La marcamos
+        // igual para que la próxima síntesis espere a que se asiente y
+        // limpie el audio.mp3 a medio escribir que pudiera dejar.
         huerfanasEnVuelo++;
         void operation
           .then(({ audioFilePath }) => {
