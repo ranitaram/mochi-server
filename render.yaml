@@ -94,7 +94,7 @@ services:
       # ~/.config/opencode/ivi.env (IVI_PROJECTS). Si solo la cambias aquí, el
       # plugin de tu máquina sigue sin publicar nada.
       - key: COPILOT_PROJECTS
-        value: mochi-server
+        value: mochi-server,tu-estudio-ideal
       # Cuánto sigue siendo confiable el estado. Con 30 min se perdía el
       # contexto en un café; 3 horas aguanta una sesión de trabajo entera.
       # Pasado esto, Ivi prefiere decir "no tengo esa info" antes que hablar de
